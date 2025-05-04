@@ -1,0 +1,7 @@
+#pragma once
+#include <juce_gui_basics/juce_gui_basics.h>
+
+namespace adhd {
+    const juce::String APPLICATION_VERSION = "${ADHD_PLUGIN_VERSION}";
+    const juce::String APPLICATION_NAME = "${ADHD_PLUGIN_NAME}";
+}

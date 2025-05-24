@@ -1,6 +1,6 @@
 [submodule "juce"]
 	path = juce
-	url = git@github.com:juce-framework/juce
+	url = https://github.com/juce-framework/juce
 [submodule "cool-turkey"]
 	path = cool-turkey
 	url = git@github.com:mrod502/cool-turkey.git

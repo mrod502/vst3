@@ -35,3 +35,6 @@
 # Build directory
 
 /build
+
+# scratch files
+/src/scratch

@@ -1,5 +1,5 @@
 #pragma once
-#include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_audio_processors/juce_audio_processors.h>
 
 namespace adhd {
     const juce::String APPLICATION_VERSION = "${ADHD_PLUGIN_VERSION}";

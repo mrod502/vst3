@@ -1,0 +1,7 @@
+#!/bin/bash
+
+buildParallelism() {
+    nproc --all
+}
+
+mkdir -p build && cd build && cmake --build . -j $(buildParallelism)

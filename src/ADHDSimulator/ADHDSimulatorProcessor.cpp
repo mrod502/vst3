@@ -3,6 +3,7 @@
 #include "ADHDSimulator.h"
 #include <iostream>
 #include <Fft.hpp>
+#include <Sin.hpp>
 #include <juce_dsp/maths/juce_FastMathApproximations.h>
 
 ADHDSimulatorAudioProcessor::ADHDSimulatorAudioProcessor()
@@ -15,6 +16,7 @@ ADHDSimulatorAudioProcessor::ADHDSimulatorAudioProcessor()
 #endif
       )
 {
+    buf.resize(1 << 16);
 }
 
 ADHDSimulatorAudioProcessor::~ADHDSimulatorAudioProcessor()
@@ -28,29 +30,17 @@ const juce::String ADHDSimulatorAudioProcessor::getName() const
 
 bool ADHDSimulatorAudioProcessor::acceptsMidi() const
 {
-#if JucePlugin_WantsMidiInput
-    return true;
-#else
     return false;
-#endif
 }
 
 bool ADHDSimulatorAudioProcessor::producesMidi() const
 {
-#if JucePlugin_ProducesMidiOutput
-    return true;
-#else
     return false;
-#endif
 }
 
 bool ADHDSimulatorAudioProcessor::isMidiEffect() const
 {
-#if JucePlugin_IsMidiEffect
-    return true;
-#else
     return false;
-#endif
 }
 
 double ADHDSimulatorAudioProcessor::getTailLengthSeconds() const
@@ -102,10 +92,6 @@ void ADHDSimulatorAudioProcessor::releaseResources()
 
 bool ADHDSimulatorAudioProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const
 {
-#if JucePlugin_IsMidiEffect
-    juce::ignoreUnused(layouts);
-    return true;
-#else
     // This is the place where you check if the layout is supported.
     // In this template code we only support mono or stereo.
     // Some plugin hosts, such as certain GarageBand versions, will only
@@ -120,7 +106,6 @@ bool ADHDSimulatorAudioProcessor::isBusesLayoutSupported(const BusesLayout &layo
 #endif
 
     return true;
-#endif
 }
 
 void ADHDSimulatorAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
@@ -138,10 +123,8 @@ void ADHDSimulatorAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     // This is here to avoid people getting screaming feedback
     // when they first compile a plugin, but obviously you don't need to keep
     // this code if your algorithm always overwrites all the output channels.
-    int numSamples;
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear(i, 0, buffer.getNumSamples());
-        numSamples = buffer.getNumSamples();
 
     // This is the place where you'd normally do the guts of your plugin's
     // audio processing...
@@ -152,14 +135,16 @@ void ADHDSimulatorAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
     {
         auto *channelData = buffer.getWritePointer(channel);
-        const auto sr = getSampleRate();
-        for (int sample =0; sample<buffer.getNumSamples();sample++){
+        uint64_t ns = buffer.getNumSamples();
+        auto sinWave = dsp::sin(ns, this->getSampleRate(), 1000.0 ,0.0);
 
-            channelData[sample] =  channelData[sample];
-            //channelData[sample] = 0.1* juce::dsp::FastMathApproximations::sin((phase + sample)* 6*adderallDose*10/sr);
+        for (int sample = 0; sample < buffer.getNumSamples(); sample++)
+        {
+
+            channelData[sample] =  sinWave[sample];
+            // channelData[sample] = 0.1* juce::dsp::FastMathApproximations::sin((phase + sample)* 6*signalFade*10/sr);
         }
     }
-    
 }
 
 //==============================================================================
@@ -193,10 +178,9 @@ void ADHDSimulatorAudioProcessor::combineBlocks(juce::AudioBuffer<float> &a, juc
 {
     if ((a.getNumChannels() != b.getNumChannels()) || a.getNumSamples() != b.getNumSamples())
     {
-        std::cerr << "incompatible buffers: ("   <<a.getNumChannels()<<"," <<b.getNumChannels()<<"),("<<a.getNumSamples()<<","<< b.getNumSamples()<<")\n";
+        std::cerr << "incompatible buffers: (" << a.getNumChannels() << "," << b.getNumChannels() << "),(" << a.getNumSamples() << "," << b.getNumSamples() << ")\n";
         return;
     }
-
 }
 
 //==============================================================================

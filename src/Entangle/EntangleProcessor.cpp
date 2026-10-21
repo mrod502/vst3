@@ -1,12 +1,12 @@
-#include "ADHDSimulatorProcessor.h"
-#include "ADHDSimulatorEditor.h"
-#include "ADHDSimulator.h"
+#include "EntangleProcessor.h"
+#include "EntangleEditor.h"
+#include "Entangle.h"
 #include <iostream>
 #include <Fft.hpp>
 #include <Sin.hpp>
 #include <juce_dsp/maths/juce_FastMathApproximations.h>
 
-ADHDSimulatorAudioProcessor::ADHDSimulatorAudioProcessor()
+EntangleAudioProcessor::EntangleAudioProcessor()
     : AudioProcessor(BusesProperties()
 #if !JucePlugin_IsMidiEffect
 #if !JucePlugin_IsSynth
@@ -19,64 +19,64 @@ ADHDSimulatorAudioProcessor::ADHDSimulatorAudioProcessor()
     buf.resize(1 << 16);
 }
 
-ADHDSimulatorAudioProcessor::~ADHDSimulatorAudioProcessor()
+EntangleAudioProcessor::~EntangleAudioProcessor()
 {
 }
 
-const juce::String ADHDSimulatorAudioProcessor::getName() const
+const juce::String EntangleAudioProcessor::getName() const
 {
-    return adhd::APPLICATION_NAME;
+    return entangle::APPLICATION_NAME;
 }
 
-bool ADHDSimulatorAudioProcessor::acceptsMidi() const
-{
-    return false;
-}
-
-bool ADHDSimulatorAudioProcessor::producesMidi() const
+bool EntangleAudioProcessor::acceptsMidi() const
 {
     return false;
 }
 
-bool ADHDSimulatorAudioProcessor::isMidiEffect() const
+bool EntangleAudioProcessor::producesMidi() const
 {
     return false;
 }
 
-double ADHDSimulatorAudioProcessor::getTailLengthSeconds() const
+bool EntangleAudioProcessor::isMidiEffect() const
+{
+    return false;
+}
+
+double EntangleAudioProcessor::getTailLengthSeconds() const
 {
     return 0.0;
 }
 
-int ADHDSimulatorAudioProcessor::getNumPrograms()
+int EntangleAudioProcessor::getNumPrograms()
 {
     return 1; // NB: some hosts don't cope very well if you tell them there are 0 programs,
               // so this should be at least 1, even if you're not really implementing programs.
 }
 
-int ADHDSimulatorAudioProcessor::getCurrentProgram()
+int EntangleAudioProcessor::getCurrentProgram()
 {
     return 0;
 }
 
-void ADHDSimulatorAudioProcessor::setCurrentProgram(int index)
+void EntangleAudioProcessor::setCurrentProgram(int index)
 {
     juce::ignoreUnused(index);
 }
 
-const juce::String ADHDSimulatorAudioProcessor::getProgramName(int index)
+const juce::String EntangleAudioProcessor::getProgramName(int index)
 {
     juce::ignoreUnused(index);
     return {};
 }
 
-void ADHDSimulatorAudioProcessor::changeProgramName(int index, const juce::String &newName)
+void EntangleAudioProcessor::changeProgramName(int index, const juce::String &newName)
 {
     juce::ignoreUnused(index, newName);
 }
 
 //==============================================================================
-void ADHDSimulatorAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+void EntangleAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     std::cout << "Sample Rate: " << sampleRate << std::endl;
     // Use this method as the place to do any pre-playback
@@ -84,13 +84,13 @@ void ADHDSimulatorAudioProcessor::prepareToPlay(double sampleRate, int samplesPe
     juce::ignoreUnused(sampleRate, samplesPerBlock);
 }
 
-void ADHDSimulatorAudioProcessor::releaseResources()
+void EntangleAudioProcessor::releaseResources()
 {
     // When playback stops, you can use this as an opportunity to free up any
     // spare memory, etc.
 }
 
-bool ADHDSimulatorAudioProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const
+bool EntangleAudioProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const
 {
     // This is the place where you check if the layout is supported.
     // In this template code we only support mono or stereo.
@@ -108,7 +108,7 @@ bool ADHDSimulatorAudioProcessor::isBusesLayoutSupported(const BusesLayout &layo
     return true;
 }
 
-void ADHDSimulatorAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
+void EntangleAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                                juce::MidiBuffer &midiMessages)
 {
     juce::ignoreUnused(midiMessages);
@@ -132,34 +132,33 @@ void ADHDSimulatorAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     // the samples and the outer loop is handling the channels.
     // Alternatively, you can process the samples with the channels
     // interleaved by keeping the same state.
+    const auto sr = this->getSampleRate();
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
     {
         auto *channelData = buffer.getWritePointer(channel);
         uint64_t ns = buffer.getNumSamples();
-        auto sinWave = dsp::sin(ns, this->getSampleRate(), 1000.0 ,0.0);
+        auto sinWave = dsp::sin(ns, sr, 1000.0 ,0.0);
 
         for (int sample = 0; sample < buffer.getNumSamples(); sample++)
         {
-
-            channelData[sample] =  sinWave[sample];
-            // channelData[sample] = 0.1* juce::dsp::FastMathApproximations::sin((phase + sample)* 6*signalFade*10/sr);
+            channelData[sample] = 0.1* juce::dsp::FastMathApproximations::sin((phase + sample)* 6*signalFade*10/sr);
         }
     }
 }
 
 //==============================================================================
-bool ADHDSimulatorAudioProcessor::hasEditor() const
+bool EntangleAudioProcessor::hasEditor() const
 {
     return true;
 }
 
-juce::AudioProcessorEditor *ADHDSimulatorAudioProcessor::createEditor()
+juce::AudioProcessorEditor *EntangleAudioProcessor::createEditor()
 {
-    return new ADHDSimulatorAudioProcessorEditor(*this);
+    return new EntangleAudioProcessorEditor(*this);
 }
 
 //==============================================================================
-void ADHDSimulatorAudioProcessor::getStateInformation(juce::MemoryBlock &destData)
+void EntangleAudioProcessor::getStateInformation(juce::MemoryBlock &destData)
 {
     // You should use this method to store your parameters in the memory block.
     // You could do that either as raw data, or use the XML or ValueTree classes
@@ -167,14 +166,14 @@ void ADHDSimulatorAudioProcessor::getStateInformation(juce::MemoryBlock &destDat
     juce::ignoreUnused(destData);
 }
 
-void ADHDSimulatorAudioProcessor::setStateInformation(const void *data, int sizeInBytes)
+void EntangleAudioProcessor::setStateInformation(const void *data, int sizeInBytes)
 {
     // You should use this method to restore your parameters from this memory block,
     // whose contents will have been created by the getStateInformation() call.
     juce::ignoreUnused(data, sizeInBytes);
 }
 
-void ADHDSimulatorAudioProcessor::combineBlocks(juce::AudioBuffer<float> &a, juce::AudioBuffer<float> &b)
+void EntangleAudioProcessor::combineBlocks(juce::AudioBuffer<float> &a, juce::AudioBuffer<float> &b)
 {
     if ((a.getNumChannels() != b.getNumChannels()) || a.getNumSamples() != b.getNumSamples())
     {
@@ -187,5 +186,5 @@ void ADHDSimulatorAudioProcessor::combineBlocks(juce::AudioBuffer<float> &a, juc
 // This creates new instances of the plugin..
 juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter()
 {
-    return new ADHDSimulatorAudioProcessor();
+    return new EntangleAudioProcessor();
 }

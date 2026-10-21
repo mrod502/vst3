@@ -1,13 +1,13 @@
 #pragma once
 
-#include "ADHDSimulatorProcessor.h"
+#include "EntangleProcessor.h"
 
 //==============================================================================
-class ADHDSimulatorAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Slider::Listener
+class EntangleAudioProcessorEditor final : public juce::AudioProcessorEditor, private juce::Slider::Listener
 {
 public:
-    explicit ADHDSimulatorAudioProcessorEditor (ADHDSimulatorAudioProcessor&);
-    ~ADHDSimulatorAudioProcessorEditor() override;
+    explicit EntangleAudioProcessorEditor (EntangleAudioProcessor&);
+    ~EntangleAudioProcessorEditor() override;
 
     //==============================================================================
     void paint (juce::Graphics&) override;
@@ -16,10 +16,10 @@ public:
 private:
     // This reference is provided as a quick way for your editor to
     // access the processor object that created it.
-    ADHDSimulatorAudioProcessor& processorRef;
-    juce::Slider prescriptionStrength;
+    EntangleAudioProcessor& processorRef;
+    juce::Slider signalFade;
     juce::LookAndFeel_V4 otherLookAndFeel;
     void adderallPrescriptionChanged(juce::Slider* slider);
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ADHDSimulatorAudioProcessorEditor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EntangleAudioProcessorEditor)
 };

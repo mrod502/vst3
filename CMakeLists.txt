@@ -6,6 +6,7 @@ add_subdirectory(juce)
 add_subdirectory(cool-turkey)
 include_directories("${CMAKE_SOURCE_DIR}/cool-turkey"
     "${CMAKE_SOURCE_DIR}/cool-turkey/Fft"
+    "${CMAKE_SOURCE_DIR}/src/Dsp"
 )
 
 add_subdirectory(src)

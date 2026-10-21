@@ -1,0 +1,7 @@
+#pragma once
+#include <juce_audio_processors/juce_audio_processors.h>
+
+namespace entangle {
+    const juce::String APPLICATION_VERSION = "${ENTANGLE_PLUGIN_VERSION}";
+    const juce::String APPLICATION_NAME = "${ENTANGLE_PLUGIN_NAME}";
+}

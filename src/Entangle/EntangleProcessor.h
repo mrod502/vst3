@@ -3,13 +3,16 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <map>
+#include <complex>
+#include <vector>
+using namespace std;
 //==============================================================================
-class ADHDSimulatorAudioProcessor final : public juce::AudioProcessor
+class EntangleAudioProcessor final : public juce::AudioProcessor
 {
 public:
     //==============================================================================
-    ADHDSimulatorAudioProcessor();
-    ~ADHDSimulatorAudioProcessor() override;
+    EntangleAudioProcessor();
+    ~EntangleAudioProcessor() override;
 
     //==============================================================================
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -42,10 +45,13 @@ public:
     //==============================================================================
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
-    float_t adderallDose;
+    double_t signalFade;
+    vector<complex<float>> fftBuf;
+    vector<float> buf;
+    double sampleRate;
 private:
     //==============================================================================
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ADHDSimulatorAudioProcessor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EntangleAudioProcessor)
     int phase;
 
     void combineBlocks(juce::AudioBuffer<float>&, juce::AudioBuffer<float>&);

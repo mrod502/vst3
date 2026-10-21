@@ -52,7 +52,7 @@ vst3/                      # CMake project "vstplug", C++23
 │   ├── Container/         # container primitives (circular buffer) — not built (§12)
 │   ├── Dsp/               # signal primitives: FFT convolution, fade, extend, sine
 │   └── Entangle/          # JUCE plugin shell — INTENTIONALLY UNDOCUMENTED (§12)
-├── juce/                  # submodule: juce-framework/juce @ 8.0.7
+├── juce/                  # submodule: juce-framework/juce @ >= 9.0.4
 ├── cool-turkey/           # submodule: third-party, slated for removal
 ├── plan/                  # roadmap docs, not part of this index
 ├── research/              # reference PDFs (Griffin–Lim, STFT, delay-free convolution)

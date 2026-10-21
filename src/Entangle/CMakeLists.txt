@@ -1,21 +1,21 @@
-set(ADHD_PLUGIN_VERSION v0.0.1)
-set(ADHD_PLUGIN_NAME "ADHD Simulator")
+set(ENTANGLE_PLUGIN_VERSION v0.0.1)
+set(ENTANGLE_PLUGIN_NAME "ENTANGLE Simulator")
 set(JUCE_COPY_PLUGIN_AFTER_BUILD true)
 
-configure_file(ADHDSimulator.h.in "${CMAKE_CURRENT_SOURCE_DIR}/ADHDSimulator.h")
+configure_file(Entangle.h.in "${CMAKE_CURRENT_SOURCE_DIR}/Entangle.h")
 
 juce_add_plugin(
     ${PROJECT_NAME}
     PLUGIN_MANUFACTURER_CODE mrod
-    PLUGIN_CODE adhd
+    PLUGIN_CODE entangle
     FORMATS VST3 Standalone
-    PRODUCT_NAME "ADHDSimulator"
+    PRODUCT_NAME "Entangle"
 )
 
 target_sources(${PROJECT_NAME}
 PRIVATE
-    ADHDSimulatorEditor.cpp
-    ADHDSimulatorProcessor.cpp)
+    EntangleEditor.cpp
+    EntangleProcessor.cpp)
 
 target_compile_definitions(${PROJECT_NAME}
 PRIVATE

@@ -1,0 +1,183 @@
+# Dockerfile.dev
+#
+# Isolated dev container for running an LLM coding agent (e.g. qwen) against this
+# JUCE/CMake workspace in sandboxed mode.
+# Goals:
+#   - non-root user, matched to the host UID/GID so the bind-mounted workspace
+#     doesn't end up with permission mismatches
+#   - C++23 toolchain, CMake, and the system libraries JUCE needs to build on Linux
+#   - read-only root fs at runtime (see compose.yml), so everything the container
+#     writes to (build tree, ccache, language caches, home, tmp) is a volume or tmpfs
+#   - git + openssh-client so submodules resolve over the mounted, read-only
+#     ~/.ssh and ~/.gitconfig
+#   - the host ~/.qwen is bind-mounted read-only at /opt/qwen-seed and the entrypoint
+#     copies it into a writable ~/.qwen on the home volume (copy-on-create: missing
+#     files only). The agent starts from the host config but the host is never the
+#     thing it writes, so settings edits, usage logs and any new file the CLI decides
+#     to create all succeed instead of hitting EROFS.
+#   - zsh as the interactive shell
+#
+# Toolchain:
+#   - Base image: ubuntu:24.04 — gcc-13 (C++23), cmake 3.28, both newer than the
+#     3.25 / C++23 floor in the root CMakeLists.txt
+#   - clang-18 with matching clangd/clang-tidy, so the compile_commands.json-backed
+#     search policy in AGENTS.md resolves against a compiler that agrees with the LSP
+#   - ccache, whose directory lives on the home volume
+#   - Node 22 from NodeSource as the runtime for @qwen-code/qwen-code
+#   - Catch2 from apt so tests have an in-image source instead of the one arriving
+#     through a submodule that is scheduled for removal
+#
+# Artifacts built here are Linux bundles (a VST3 is a directory containing a .so,
+# the Standalone is a Linux ELF). They are for configure/build/test verification,
+# not for loading into a host DAW — the macOS bundle still comes from the host build.
+
+FROM ubuntu:24.04
+
+ARG USERNAME=dev
+ARG USER_UID=501
+ARG USER_GID=20
+ARG NODE_MAJOR=22
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# clang-18, clangd-18 and catch2 ship in universe, which is not guaranteed to be
+# enabled in the base image's source list. The helper package is purged in the same
+# layer so it leaves no weight behind.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends software-properties-common \
+    && add-apt-repository -y universe \
+    && apt-get purge -y --auto-remove software-properties-common \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Build toolchain, then the JUCE Linux dependencies (ALSA/X11/FreeType/GL), kept in
+# one layer so the image has no orphaned apt metadata.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        ninja-build \
+        ccache \
+        pkg-config \
+        clang-18 \
+        clangd-18 \
+        clang-tidy-18 \
+        gdb \
+        catch2 \
+        ca-certificates \
+        curl \
+        git \
+        openssh-client \
+        ripgrep \
+        poppler-utils \
+        less \
+        vim \
+        zsh \
+        libasound2-dev \
+        libfreetype-dev \
+        libfontconfig1-dev \
+        libglu1-mesa-dev \
+        libx11-dev \
+        libxcomposite-dev \
+        libxcursor-dev \
+        libxinerama-dev \
+        libxi-dev \
+        libxkbcommon-dev \
+        libxrandr-dev \
+        libcurl4-openssl-dev \
+        libjack-jackd2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# The -18 packages install only versioned binaries; AGENTS.md and muscle memory
+# both reach for the unversioned names.
+RUN ln -s /usr/bin/clang-18 /usr/local/bin/clang \
+    && ln -s /usr/bin/clang++-18 /usr/local/bin/clang++ \
+    && ln -s /usr/bin/clangd-18 /usr/local/bin/clangd \
+    && ln -s /usr/bin/clang-tidy-18 /usr/local/bin/clang-tidy
+
+# Node lives in a system prefix, not under $HOME, because $HOME is a volume at
+# runtime and would shadow it.
+RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @qwen-code/qwen-code@latest \
+    && npm cache clean --force \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user setup. $HOME must be owned by the dev user before the volume mount
+# seeds vst3-dev-home from it, otherwise the entrypoint cannot write ~/.zshrc
+# (useradd -m skips an existing directory).
+# ~/.qwen is the copy-on-create destination and must already belong to the dev user
+# when a fresh home volume is seeded from the image; /opt/qwen-seed is the read-only
+# bind mountpoint for the host config.
+# USER_GID may already be taken in the base image (gid 20 is dialout on Ubuntu), so
+# the user joins whichever group owns that gid rather than assuming a fresh one.
+RUN set -eux; \
+    if getent group "${USER_GID}" >/dev/null 2>&1; then \
+        GROUP="$(getent group "${USER_GID}" | cut -d: -f1)"; \
+    else \
+        groupadd --gid "${USER_GID}" "${USERNAME}"; \
+        GROUP="${USERNAME}"; \
+    fi; \
+    useradd --uid "${USER_UID}" --gid "${GROUP}" -m -s /bin/zsh "${USERNAME}"; \
+    mkdir -p "/home/${USERNAME}/.cache/ccache" \
+             "/home/${USERNAME}/.qwen" \
+             /opt/qwen-seed; \
+    chown -R "${USERNAME}:${GROUP}" "/home/${USERNAME}"
+
+# /workspace/build is the build volume at runtime. Docker seeds an empty named
+# volume from the image's path here, so the directory must exist and already belong
+# to the dev user or the volume mounts root-owned and CMake cannot write CMakeFiles.
+RUN mkdir -p /workspace/build && chown -R ${USERNAME} /workspace
+
+RUN git config --system --add safe.directory /workspace
+
+ENV GIT_TERMINAL_PROMPT=0
+
+# A minimal system-wide zshrc. This lives on the image's (read-only at runtime)
+# root fs rather than under $HOME, because $HOME (/home/dev) is a volume mount in
+# compose.yml.
+RUN cat <<'EOF' > /etc/zsh/zshrc
+HISTFILE="${HOME}/.history"
+HISTSIZE=5000
+SAVEHIST=5000
+setopt SHARE_HISTORY
+autoload -Uz compinit && compinit -C
+PROMPT='%F{magenta}vst3-dev%f:%F{blue}%~%f %# '
+EOF
+
+# Runs as the dev user before exec-ing the real command. Two jobs: seed $HOME/.qwen
+# as a writable copy of the host config, and make sure $HOME has the files zsh
+# expects, since the volume gives us a fresh /home/dev on first container start.
+RUN cat <<'EOF' > /usr/local/bin/entrypoint.sh
+#!/bin/sh
+set -e
+
+cat > "$HOME/.zshrc" <<'ZSHRC'
+source /etc/zsh/zshrc
+ZSHRC
+
+# Copy-on-create: the host ~/.qwen arrives read-only at /opt/qwen-seed and only the
+# files $HOME/.qwen does not have yet are copied. Container edits therefore always win
+# over the host copy and nothing is ever written back to the host. tmp and
+# extension-store are excluded -- tmp is scratch, and extension-store holds host-
+# platform installs that the CLI repopulates in-container.
+seed_qwen() {
+    [ -d /opt/qwen-seed ] || return 0
+    mkdir -p "$HOME/.qwen"
+    rc=0
+    ( cd /opt/qwen-seed && tar --exclude=./tmp --exclude=./extension-store -cf - . ) \
+        | ( cd "$HOME/.qwen" && tar -xpf - --no-same-owner --skip-old-files ) || rc=$?
+    [ "$rc" -le 1 ]
+}
+
+# tar exits 1 when a host file changed while being read, which leaves a usable copy.
+# A hard failure warns instead of aborting so the workspace still starts, empty-config.
+seed_qwen || echo "warning: could not seed ~/.qwen from /opt/qwen-seed" >&2
+
+exec "$@"
+EOF
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER ${USERNAME}
+WORKDIR /workspace
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/zsh"]

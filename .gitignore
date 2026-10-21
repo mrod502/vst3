@@ -38,3 +38,6 @@
 
 # scratch files
 /src/scratch
+.DS_Store
+# the main binary
+/main

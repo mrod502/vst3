@@ -1,0 +1,75 @@
+name: vst3
+
+# Every Docker object this file creates carries the literal vst3- prefix: Compose
+# would otherwise default to a vst3_ separator and leave the objects indistinguishable
+# from another project's on this shared daemon. container_name is never auto-prefixed.
+networks:
+  dev:
+    name: vst3-net
+
+volumes:
+  home:
+    # Holds /home/dev, so the container's writable copy of ~/.qwen, its usage logs and
+    # chat state persist here. No host file outside this repo is written by the container.
+    name: vst3-home
+  build:
+    name: vst3-build
+
+services:
+  vst3-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        # Defaults are this host's uid/gid so the bind-mounted workspace stays
+        # writable; override with DEV_UID/DEV_GID in the shell or a .env file.
+        USER_UID: ${DEV_UID:-501}
+        USER_GID: ${DEV_GID:-20}
+    image: vst3-dev
+    container_name: vst3-dev
+    env_file: .env.dev
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    networks:
+      - dev
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - .:/workspace
+      # The Linux build tree is a volume, not the host directory: a CMakeCache.txt
+      # configured by the host's AppleClang cannot be reused by the container's
+      # gcc/clang, and sharing one directory clobbers whichever side reconfigures.
+      - build:/workspace/build
+      - ${HOME}/.gitconfig:/home/dev/.gitconfig:ro
+      - ${HOME}/.ssh:/home/dev/.ssh:ro
+      - home:/home/dev
+      # Host Qwen Code config (settings.json, skills, AGENTS.md) is read-only and only
+      # a seed: the entrypoint copies whatever ~/.qwen is missing into the writable
+      # copy on the home volume. Nothing under ~/.qwen is writable here, so the host
+      # config can never be mutated by the container and no CLI write can hit EROFS.
+      # The copy is refreshed on container start; to pull a host edit made after that,
+      # restart the container, or force it with:
+      #   docker compose exec vst3-dev cp -R /opt/qwen-seed/. /home/dev/.qwen/
+      - ${HOME}/.qwen:/opt/qwen-seed:ro
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          mode: 01777
+    environment:
+      HOME: /home/dev
+      CCACHE_DIR: /home/dev/.cache/ccache
+      CMAKE_BUILD_PARALLEL_LEVEL: ${VST3_CPUS:-4}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    # Override per shell with VST3_MEM_LIMIT / VST3_CPUS. Keep the hard cap under
+    # the Docker Desktop VM's total memory, and check `docker info` for that figure
+    # rather than trusting this default: a JUCE TU at -O2 peaks near 1 GB, so the
+    # parallelism value is what actually decides whether a build survives.
+    mem_limit: ${VST3_MEM_LIMIT:-4g}
+    cpus: ${VST3_CPUS:-4}
+    command: /bin/zsh

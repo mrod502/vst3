@@ -48,10 +48,13 @@ vst3/                      # CMake project "vstplug", C++23
 ├── cmd/install            # submodule init + CMake configure into ./build
 ├── cmd/build              # cmake --build ./build -j $(nproc)
 ├── src/
-│   ├── CMakeLists.txt     # add_subdirectory(Entangle), add_subdirectory(Dsp)
-│   ├── Container/         # container primitives (circular buffer) — not built (§12)
+│   ├── CMakeLists.txt     # add_subdirectory(Entangle, Dsp, Container, Engine)
+│   ├── Container/         # container primitives: CircularBuffer (JUCE-light)
 │   ├── Dsp/               # signal primitives: FFT convolution, fade, extend, sine
+│   ├── Engine/            # hop-aligned engine seam: Engine.hpp, HopScheduler (JUCE-light)
 │   └── Entangle/          # JUCE plugin shell — INTENTIONALLY UNDOCUMENTED (§12)
+├── tools/                 # OfflineRender: offline harness driving the plugin's shared code
+├── cmake/                 # EntangleTestFramework.cmake — test-framework wiring (D-005)
 ├── juce/                  # submodule: juce-framework/juce @ >= 9.0.4
 ├── cool-turkey/           # submodule: third-party, slated for removal
 ├── plan/                  # roadmap docs, not part of this index
@@ -66,13 +69,22 @@ Targets present after a configure (`cmake --build build --target help`):
 | `vstplug` | The `juce_add_plugin` target (`PRODUCT_NAME "Entangle"`); compiles processor + editor. |
 | `vstplug_VST3` / `vstplug_Standalone` | Format wrappers built from `vstplug`. |
 | `Dsp` | Static library for `src/Dsp`. |
+| `Container` | Static library for `src/Container` (`container::CircularBuffer`). |
+| `Engine` | Static library for `src/Engine` (engine seam + `HopScheduler`); links `Container`. |
+| `OfflineRender` | Console harness that renders through the plugin's shared code; registered with CTest. |
+| `ContainerTests`, `EngineTests` | Catch2 console test programs (§10). |
 | `Fft`, `Dft` | Transform libraries reachable through the root include path. |
-| `Catch2`, `Catch2WithMain` | Test framework libraries reachable today — see the caveat in §9. |
+| `Catch2`, `Catch2WithMain` | Third-party test libraries arriving through `cool-turkey`; new tests must not couple to them (§10). |
+| `EntangleCatch2` | The Catch2 this repo builds itself, from pinned amalgamated sources (§10). |
 
-`Container` has its own `CMakeLists.txt` but is **not** added by
-`src/CMakeLists.txt`, so it is never configured and produces no target (§12).
+`Container` and `Engine` are registered in `src/CMakeLists.txt` and carry their own
+`target_include_directories(... PUBLIC ...)`, so consumers `target_link_libraries`
+against them instead of leaning on the root `include_directories`.
 Generated plugin bundles land under
-`build/src/Entangle/vstplug_artefacts/Debug/{VST3,Standalone}/`.
+`build/src/Entangle/vstplug_artefacts/{VST3,Standalone}/`. The path has no build-type
+segment under the pinned Ninja generator; a tree configured before the pin put them
+under `vstplug_artefacts/Debug/` instead, so verify with `find build -name '*.vst3'`
+rather than trusting either spelling.
 
 Notation shared by code, tests and docs — never invent synonyms, and never use
 `B` for block size:
@@ -98,6 +110,9 @@ Before editing, always read the current file content and target the edit against
 text you actually read. Never guess at file contents or line numbers, and
 re-read after the edit to confirm it landed where you intended.
 
+For JUCE work, load the matching skill from `.qwen/skills` (§15) before writing or
+changing code in that area; they are not part of this file's context.
+
 ## 4. Build and Validation
 
 ```bash
@@ -111,8 +126,9 @@ make build
 cmake --build build --target Dsp -j8
 cmake --build build --target vstplug_VST3 -j8
 
-# Once a test target exists (it does not yet — §9):
+# Tests — Console programs discovered by CTest (§10):
 ctest --test-dir build --output-on-failure
+ctest --test-dir build -R OfflineRender --output-on-failure
 ```
 
 Validation bar for a claimed-complete change: the narrowest affected library
@@ -257,14 +273,15 @@ Rules that keep them clean:
 
 ## 10. Testing Standard
 
-There is **no test target wired into this build yet**, and `ctest` has nothing to
-run. Say that honestly rather than implying coverage.
+Tests are wired: `include(CTest)` at the root plus one console test target per
+library, discovered by `catch_discover_tests` and run with
+`ctest --test-dir build --output-on-failure`.
 
-* `Catch2`/`Catch2WithMain` are reachable in the current configure, but they
-  arrive through a third-party submodule scheduled for removal. **Do not couple
-  new tests to them.** Fetch the framework inside this repo (`FetchContent` plus
-  `enable_testing()` and `catch_discover_tests`) and record the choice as a
-  decision entry.
+* **Do not couple new tests to `Catch2`/`Catch2WithMain`** — those target names are
+  already taken by the third-party submodule scheduled for removal, so
+  `FetchContent_MakeAvailable(Catch2)` collides. This repo builds its own pinned
+  `EntangleCatch2` target from the amalgamated sources
+  (`cmake/EntangleTestFramework.cmake`, decision D-005).
 * **A behaviour change ships with a test, or with a written reason it cannot be
   tested.** "Awkward" is not that reason; "needs a host clock" usually is.
 * **Tests run as plain console programs** — the payoff of the JUCE-light rule in
@@ -287,8 +304,8 @@ run. Say that honestly rather than implying coverage.
    body belongs out of the header, and a `README.md` (§12).
 2. Add `add_library(<Name> <sources>)` in `src/<Name>/CMakeLists.txt`, then
    `add_subdirectory(<Name>)` in `src/CMakeLists.txt`. **A library not listed
-   there is never configured and never compiled** — that is `Container`'s current
-   state, and exactly the failure mode to avoid.
+   there is never configured and never compiled** — exactly the failure mode to
+   avoid.
 3. Prefer `target_include_directories(<Name> PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})`
    and `target_link_libraries(<consumer> PUBLIC <Name>)` over the global
    `include_directories` in the root `CMakeLists.txt`. (That global block is why
@@ -306,7 +323,8 @@ its contract.
 | Component | Doc | Status |
 |---|---|---|
 | `src/Dsp` | `src/Dsp/README.md` | to write — primitives, their contracts and tolerances |
-| `src/Container` | `src/Container/README.md` | to write — container and scratch-buffer policy |
+| `src/Container` | `src/Container/README.md` | written — ring contract, capacity bound, threading |
+| `src/Engine` | `src/Engine/README.md` | written — engine seam, scheduler contract, ring sizing |
 | `src/Entangle` | `src/Entangle/README.md` | deferred — shell is being rewritten (§13) |
 
 A component `README.md` covers: purpose, public contract, threading assumptions,
@@ -315,16 +333,12 @@ code structure — describe the contract and let the code be the structure.
 
 ## 13. Current Gaps (re-verify before relying on these; fix, don't work around)
 
-* `src/Container` is not registered in `src/CMakeLists.txt` → no `Container`
-  target exists and nothing compiles it.
 * `src/Entangle` internals are undocumented by design; the shell is being
   rebuilt around the seams in §9. Expect processor/editor contents to change
   completely.
-* `container::CircularBuffer` has an empty constructor body and stores no
-  capacity — a stub, not a usable container.
 * `dsp::fft_convolve` has no return statement and uses `std::transform` without
-  including `<algorithm>`; it compiles only because nothing instantiates it. Do
-  not read the green `Dsp` build as evidence that these templates work.
+  including `<algorithm>`; nothing instantiates it, so a green build of that
+  file would be no evidence the template works.
 * `PLUGIN_CODE` is longer than the four characters JUCE requires, so configure
   warns on every run.
 * `compose.yml` / `Dockerfile.dev` are Rust-era leftovers (Rust toolchain,
@@ -341,6 +355,27 @@ code structure — describe the contract and let the code be the structure.
   must be reflected here so the index stays accurate.
 * Small, reviewable commits. Do not refactor code outside the task's scope;
   record what you noticed instead of silently "improving" it.
+
+## 15. JUCE Skills Index — `.qwen/skills/`
+
+Five distilled JUCE references, each written against the pinned JUCE 9.0.4 submodule. They
+are loaded on demand and are **not** part of this file's context — invoke the `skill` tool
+with the name below before writing or changing JUCE code in that area, not after the first
+compile error. Every one carries a procedure, a pitfall list and a verification recipe that
+this file deliberately does not duplicate.
+
+| Skill | Use it when |
+|---|---|
+| `juce-apvts-parameters` | Declaring parameters in a `ParameterLayout`, reading them on the audio thread, `getStateInformation`/`setStateInformation`, editor attachments, undo. Also "the value reads 0.7, not 44.1k" — `getRawParameterValue()` is denormalised. |
+| `juce-dsp-processing` | Wiring `juce::dsp`: `ProcessorChain`, `AudioBlock` + `ProcessContext`, IIR/FIR and `StateVariableTPTFilter`, `DelayLine`, `Oversampling`, `Convolution`, `DryWetMixer`, and the latency each implies. Silent output, mono-only asserts, doubled or unreported latency. |
+| `juce-vector-operations` | Making block math you already have faster: `FloatVectorOperations`, `dsp::SIMDRegister`, lane counts, alignment, mask semantics, denormal CPU spikes. Performance, not signal-path design. |
+| `juce-audio-file-io` | Loading a file into memory (IR, sample, preview) or rendering to disk: format sniffing, bit-depth and channel mapping, `AudioFormatWriterOptions`, `ThreadedWriter`, the codec capability matrix, metadata keys. |
+| `juce-custom-ui-painting` | Giving the editor its own look: `LookAndFeel_V4` + `ColourScheme` versus colour ids, `paint()`/`Graphics`, `Path` and `AffineTransform`, SVG drawables, dirty-rectangle repaint. |
+
+Seams between them: choosing a processor is `juce-dsp-processing`, speeding up a loop you
+already wrote is `juce-vector-operations`, and a control that misbehaves in the UI is still
+`juce-apvts-parameters`. All five are JUCE-side guidance — none of it belongs in `src/Dsp`
+or `src/Container` (§9).
 
 ---
 

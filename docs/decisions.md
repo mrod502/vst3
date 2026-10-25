@@ -118,9 +118,6 @@ measured impulse delay, output == input shifted, exact float equality).
 
 ## D-005 — Test framework and how it is obtained
 
-**Context.** Tests must run as plain console programs (§9 JUCE-light), must not couple to
-`cool-turkey` (slated for removal), and must be discoverable by `ctest`.
-
 **Options.**
 - JUCE `UnitTest` — needs a JUCE-linked console app, wrong for JUCE-light libraries.
 - Catch2 via `FetchContent_MakeAvailable` — the obvious reading of AGENTS §10.
@@ -130,20 +127,6 @@ measured impulse delay, output == input shifted, exact float equality).
 **Choice.** Catch2 pinned to tag `v3.7.1` via `FetchContent_Populate`, compiled from
 `extras/catch_amalgamated.cpp` into a project-local target `EntangleCatch2`, with
 `catch_discover_tests` taken from the fetched `extras/` CMake modules.
-
-`FetchContent_MakeAvailable(Catch2)` is **not** usable here: `cool-turkey/CMakeLists.txt`
-already does `add_subdirectory(Catch2)`, so `Catch2`/`Catch2WithMain` exist in this build
-tree and `add_subdirectory` of a second copy fails on the duplicate target name. The
-amalgamated sources avoid both the collision and any dependency on the submodule, and they
-survive `cool-turkey`'s removal unchanged.
-
-**Revisit trigger.** When `cool-turkey` is deleted, switch to
-`FetchContent_MakeAvailable(Catch2)` and drop `EntangleCatch2`. If Catch2 ever fails to
-build on aarch64/C++23 (tripwire T7), switch to doctest and record it here.
-
-**Evidence.** `ninja -t targets` shows `Catch2: phony`, `Catch2WithMain: phony`,
-`libCatch2d.a` all owned by `cool-turkey/Catch2/…`. `catch_amalgamated.cpp` defines the
-default `main`, so it covers `Catch2WithMain`'s role.
 
 ---
 

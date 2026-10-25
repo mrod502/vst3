@@ -1,10 +1,5 @@
 # Test framework for the JUCE-light libraries: console programs only, never a JUCE link.
 #
-# FetchContent_MakeAvailable(Catch2) is unusable here: cool-turkey/CMakeLists.txt already
-# add_subdirectory(Catch2)s it, so the Catch2 / Catch2WithMain targets exist in this build
-# tree and a second add_subdirectory fails on the duplicate name. We populate the pinned
-# tree and compile its amalgamated sources under our own target, which also survives
-# cool-turkey's removal unchanged. See D-005 in docs/decisions.md.
 
 include(FetchContent)
 

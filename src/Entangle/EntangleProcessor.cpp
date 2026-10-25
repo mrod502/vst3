@@ -1,26 +1,42 @@
 #include "EntangleProcessor.h"
 #include "EntangleEditor.h"
 #include "Entangle.h"
+#include <algorithm>
 #include <iostream>
-#include <Fft.hpp>
-#include <Sin.hpp>
-#include <juce_dsp/maths/juce_FastMathApproximations.h>
+
+juce::AudioProcessorValueTreeState::ParameterLayout EntangleAudioProcessor::makeLayout()
+{
+    juce::StringArray hopNames;
+    for (const int hop : hopValues)
+        hopNames.add(juce::String(hop));
+
+    juce::AudioProcessorValueTreeState::ParameterLayout layout;
+    layout.add(
+        std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{blendParameterId, 1}, "Blend",
+            juce::NormalisableRange<float>{-1.0f, 1.0f, 0.01f}, 0.0f),
+        std::make_unique<juce::AudioParameterChoice>(
+            juce::ParameterID{hopParameterId, 1}, "Hop size", hopNames, defaultHopIndex,
+            juce::AudioParameterChoiceAttributes().withAutomatable(false)));
+    return layout;
+}
 
 EntangleAudioProcessor::EntangleAudioProcessor()
     : AudioProcessor(BusesProperties()
-#if !JucePlugin_IsMidiEffect
-#if !JucePlugin_IsSynth
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
-#endif
-                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)
-#endif
-      )
+                         .withInput("Sidechain", juce::AudioChannelSet::stereo(), false)
+                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+      apvts(*this, nullptr, "PARAMETERS", makeLayout()),
+      engine(std::make_unique<engine::PassthroughEngine>()),
+      scheduler(*engine)
 {
+    apvts.addParameterListener(hopParameterId, this);
     buf.resize(1 << 16);
 }
 
 EntangleAudioProcessor::~EntangleAudioProcessor()
 {
+    apvts.removeParameterListener(hopParameterId, this);
 }
 
 const juce::String EntangleAudioProcessor::getName() const
@@ -76,12 +92,97 @@ void EntangleAudioProcessor::changeProgramName(int index, const juce::String &ne
 }
 
 //==============================================================================
-void EntangleAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+bool EntangleAudioProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const
 {
-    std::cout << "Sample Rate: " << sampleRate << std::endl;
-    // Use this method as the place to do any pre-playback
-    // initialisation that you need..
-    juce::ignoreUnused(sampleRate, samplesPerBlock);
+    const auto mainIn = layouts.getMainInputChannelSet();
+    const auto mainOut = layouts.getMainOutputChannelSet();
+
+    // The passthrough hands A back on the channel set it arrived on; M4 relaxes this once
+    // the engine owns the channel map.
+    if (mainIn != mainOut)
+        return false;
+
+    // Some hosts, such as certain GarageBand versions, will only load plugins that support
+    // a stereo bus layout.
+    if (mainIn != juce::AudioChannelSet::mono() && mainIn != juce::AudioChannelSet::stereo())
+        return false;
+
+    // A host that offers no second bus, or leaves it switched off, is a supported state
+    // rather than a rejected one: B is silence (D-001, D-002).
+    const auto sidechain = layouts.getChannelSet(true, 1);
+    if (sidechain.isDisabled())
+        return true;
+
+    return sidechain == juce::AudioChannelSet::mono() || sidechain == juce::AudioChannelSet::stereo();
+}
+
+int EntangleAudioProcessor::currentHopIndex() const
+{
+    const auto *raw = apvts.getRawParameterValue(hopParameterId);
+    if (raw == nullptr)
+        return defaultHopIndex;
+
+    return juce::jlimit(0, static_cast<int>(hopValues.size()) - 1, static_cast<int>(raw->load()));
+}
+
+void EntangleAudioProcessor::configureRings(double sampleRateToUse, int samplesPerBlock)
+{
+    const int channels = std::min(getChannelCountOfBus(true, 0), getChannelCountOfBus(false, 0));
+    auto *sidechainBus = getBus(true, 1);
+    const bool sidechainIsLive = sidechainBus != nullptr && sidechainBus->isEnabled();
+
+    activeChannels = channels;
+    sidechainActive = sidechainIsLive;
+
+    if (channels <= 0)
+        return;
+
+    engineConfig.sampleRate = sampleRateToUse;
+    engineConfig.hop = hopValues[static_cast<std::size_t>(currentHopIndex())];
+    engineConfig.maxChannels = channels;
+    engineConfig.latencySamples = engineConfig.hop; ///< M1 placeholder policy (D-004)
+
+    engine::SchedulerConfig schedulerConfig;
+    schedulerConfig.engine = engineConfig;
+    schedulerConfig.channels = channels;
+    schedulerConfig.sidechainChannels = sidechainIsLive ? getChannelCountOfBus(true, 1) : 0;
+    schedulerConfig.maxHostBlock = std::max(samplesPerBlock, maxHostBlockSamples);
+
+    scheduler.prepare(schedulerConfig);
+    setLatencySamples(engineConfig.latencySamples);
+}
+
+void EntangleAudioProcessor::prepareToPlay(double sampleRateToUse, int samplesPerBlock)
+{
+    configureRings(sampleRateToUse, samplesPerBlock);
+}
+
+void EntangleAudioProcessor::reconfigureSafely()
+{
+    suspendProcessing(true);
+    configureRings(getSampleRate(), getBlockSize());
+    suspendProcessing(false);
+}
+
+void EntangleAudioProcessor::processorLayoutsChanged()
+{
+    reconfigureSafely();
+}
+
+void EntangleAudioProcessor::parameterChanged(const juce::String &parameterID, float newValue)
+{
+    juce::ignoreUnused(newValue);
+
+    // A hop change re-prepares every ring. AsyncUpdater moves that work to the message
+    // thread even if a host poked the parameter from elsewhere, which is what makes the
+    // suspend round-trip in reconfigureSafely safe to make.
+    if (parameterID == hopParameterId)
+        triggerAsyncUpdate();
+}
+
+void EntangleAudioProcessor::handleAsyncUpdate()
+{
+    reconfigureSafely();
 }
 
 void EntangleAudioProcessor::releaseResources()
@@ -90,60 +191,41 @@ void EntangleAudioProcessor::releaseResources()
     // spare memory, etc.
 }
 
-bool EntangleAudioProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const
+void EntangleAudioProcessor::reset()
 {
-    // This is the place where you check if the layout is supported.
-    // In this template code we only support mono or stereo.
-    // Some plugin hosts, such as certain GarageBand versions, will only
-    // load plugins that support stereo bus layouts.
-    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono() && layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
-        return false;
-
-    // This checks if the input layout matches the output layout
-#if !JucePlugin_IsSynth
-    if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
-        return false;
-#endif
-
-    return true;
+    // Restores the output ring's latency pre-fill. Without it the tail of the previous take
+    // plays back over the new one, and the latency reported to the host stops matching the
+    // delay the host can actually measure.
+    scheduler.reset();
 }
 
 void EntangleAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
-                                               juce::MidiBuffer &midiMessages)
+                                          juce::MidiBuffer &midiMessages)
 {
     juce::ignoreUnused(midiMessages);
 
     juce::ScopedNoDenormals noDenormals;
-    auto totalNumInputChannels = getTotalNumInputChannels();
-    auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-    // In case we have more outputs than inputs, this code clears any output
-    // channels that didn't contain input data, (because these aren't
-    // guaranteed to be empty - they may contain garbage).
-    // This is here to avoid people getting screaming feedback
-    // when they first compile a plugin, but obviously you don't need to keep
-    // this code if your algorithm always overwrites all the output channels.
-    for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-        buffer.clear(i, 0, buffer.getNumSamples());
+    if (const auto *blend = apvts.getRawParameterValue(blendParameterId))
+        smoothedBlendValue += (blend->load() - smoothedBlendValue) * blendSmoothingPerCallback;
 
-    // This is the place where you'd normally do the guts of your plugin's
-    // audio processing...
-    // Make sure to reset the state if your inner loop is processing
-    // the samples and the outer loop is handling the channels.
-    // Alternatively, you can process the samples with the channels
-    // interleaved by keeping the same state.
-    const auto sr = this->getSampleRate();
-    for (int channel = 0; channel < totalNumInputChannels; ++channel)
+    if (activeChannels <= 0)
+        return;
+
+    const auto mainIn = getBusBuffer(buffer, true, 0);
+    auto mainOut = getBusBuffer(buffer, false, 0);
+    const int numSamples = buffer.getNumSamples();
+
+    if (sidechainActive)
     {
-        auto *channelData = buffer.getWritePointer(channel);
-        uint64_t ns = buffer.getNumSamples();
-        auto sinWave = dsp::sin(ns, sr, 1000.0 ,0.0);
-
-        for (int sample = 0; sample < buffer.getNumSamples(); sample++)
-        {
-            channelData[sample] = 0.1* juce::dsp::FastMathApproximations::sin((phase + sample)* 6*signalFade*10/sr);
-        }
+        const auto sideIn = getBusBuffer(buffer, true, 1);
+        scheduler.process(mainIn.getArrayOfReadPointers(), sideIn.getArrayOfReadPointers(),
+                          mainOut.getArrayOfWritePointers(), activeChannels, numSamples);
+        return;
     }
+
+    scheduler.process(mainIn.getArrayOfReadPointers(), nullptr,
+                      mainOut.getArrayOfWritePointers(), activeChannels, numSamples);
 }
 
 //==============================================================================
@@ -160,17 +242,16 @@ juce::AudioProcessorEditor *EntangleAudioProcessor::createEditor()
 //==============================================================================
 void EntangleAudioProcessor::getStateInformation(juce::MemoryBlock &destData)
 {
-    // You should use this method to store your parameters in the memory block.
-    // You could do that either as raw data, or use the XML or ValueTree classes
-    // as intermediaries to make it easy to save and load complex data.
-    juce::ignoreUnused(destData);
+    const auto xml = apvts.copyState().toXmlString();
+    destData.replaceWith(xml.toRawUTF8(), xml.getNumBytesAsUTF8());
 }
 
 void EntangleAudioProcessor::setStateInformation(const void *data, int sizeInBytes)
 {
-    // You should use this method to restore your parameters from this memory block,
-    // whose contents will have been created by the getStateInformation() call.
-    juce::ignoreUnused(data, sizeInBytes);
+    auto state = juce::ValueTree::fromXml(
+        juce::String::fromUTF8(static_cast<const char *>(data), sizeInBytes));
+    if (state.isValid())
+        apvts.replaceState(state);
 }
 
 void EntangleAudioProcessor::combineBlocks(juce::AudioBuffer<float> &a, juce::AudioBuffer<float> &b)

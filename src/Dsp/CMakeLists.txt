@@ -1,4 +1,7 @@
 add_library(
-    Convolve
+    Dsp
     Convolve.cpp
+    Sin.cpp
     )
+
+    target_link_libraries(Dsp PUBLIC)

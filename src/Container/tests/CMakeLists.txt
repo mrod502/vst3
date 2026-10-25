@@ -1,0 +1,3 @@
+add_executable(ContainerTests CircularBufferTests.cpp)
+target_link_libraries(ContainerTests PRIVATE Container EntangleCatch2)
+catch_discover_tests(ContainerTests)

@@ -1,0 +1,3 @@
+add_executable(EngineTests HopSchedulerTests.cpp)
+target_link_libraries(EngineTests PRIVATE Engine EntangleCatch2)
+catch_discover_tests(EngineTests)

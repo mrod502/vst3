@@ -26,7 +26,8 @@ PRIVATE
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:${PROJECT_NAME},JUCE_VERSION>")
 
 target_link_libraries(${PROJECT_NAME}
-    PRIVATE   
+    PRIVATE
+        Engine
         juce::juce_gui_extra
         juce::juce_gui_basics
         juce::juce_audio_utils

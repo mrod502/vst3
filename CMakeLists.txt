@@ -9,4 +9,11 @@ include_directories("${CMAKE_SOURCE_DIR}/cool-turkey"
     "${CMAKE_SOURCE_DIR}/src/Dsp"
 )
 
+include(CTest)
+if(BUILD_TESTING)
+    include(cmake/EntangleTestFramework.cmake)
+endif()
+
 add_subdirectory(src)
+# After src: the harness links the plugin's shared-code target.
+add_subdirectory(tools)

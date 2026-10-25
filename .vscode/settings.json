@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "*.mm": "cpp",
+        "array": "cpp",
+        "string": "cpp",
+        "string_view": "cpp",
+        "vector": "cpp",
+        "complex": "cpp",
+        "__tree": "cpp",
+        "map": "cpp",
+        "iosfwd": "cpp",
+        "iostream": "cpp"
+    }
+}

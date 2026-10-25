@@ -1,0 +1,3 @@
+# Nothing is COPY'd into the image — the workspace arrives as a bind mount at
+# runtime. Excluding the tree keeps a several-hundred-MB context out of every build.
+*

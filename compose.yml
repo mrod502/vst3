@@ -14,6 +14,18 @@ volumes:
     name: vst3-home
   build:
     name: vst3-build
+  tmp:
+    name: vst3-tmp
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      # Docker mounts tmpfs noexec by default, which breaks any tool that compiles a
+      # probe and then runs it from TMPDIR (CMake try_compile, and JUCE's juceaide
+      # self-test fails with "Permission denied"). exec is the only deviation from
+      # Docker's defaults here; mode=1777 keeps /tmp world-writable with sticky bit.
+      # Sized under the service mem_limit so a full tmpfs cannot outrun the build.
+      o: "mode=1777,size=512m,exec"
 
 services:
   vst3-dev:
@@ -52,10 +64,10 @@ services:
       # restart the container, or force it with:
       #   docker compose exec vst3-dev cp -R /opt/qwen-seed/. /home/dev/.qwen/
       - ${HOME}/.qwen:/opt/qwen-seed:ro
-      - type: tmpfs
-        target: /tmp
-        tmpfs:
-          mode: 01777
+      # /tmp is the vst3-tmp tmpfs volume rather than the `type: tmpfs` short form,
+      # because that form only accepts size/mode and gives noexec, which fails any
+      # build probe that runs a freshly compiled binary out of TMPDIR.
+      - tmp:/tmp
     environment:
       HOME: /home/dev
       CCACHE_DIR: /home/dev/.cache/ccache

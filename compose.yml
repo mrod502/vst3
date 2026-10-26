@@ -82,6 +82,6 @@ services:
     # the Docker Desktop VM's total memory, and check `docker info` for that figure
     # rather than trusting this default: a JUCE TU at -O2 peaks near 1 GB, so the
     # parallelism value is what actually decides whether a build survives.
-    mem_limit: ${VST3_MEM_LIMIT:-4g}
+    mem_limit: ${VST3_MEM_LIMIT:-8g}
     cpus: ${VST3_CPUS:-4}
     command: /bin/zsh

@@ -1,0 +1,7 @@
+{
+  "memory": {
+    "enableManagedAutoMemory": true,
+    "enableManagedAutoDream": true
+  },
+  "$version": 4
+}

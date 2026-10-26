@@ -46,10 +46,12 @@ vst3/                      # CMake project "vstplug", C++23
 ├── cmd/install            # submodule init + CMake configure into ./build
 ├── cmd/build              # cmake --build ./build -j $(nproc)
 ├── src/
-│   ├── CMakeLists.txt     # add_subdirectory(Entangle, Dsp, Container, Engine)
+│   ├── CMakeLists.txt     # add_subdirectory(Entangle, Dsp, Container, Engine, Fft, FftJuce)
 │   ├── Container/         # container primitives: CircularBuffer (JUCE-light)
 │   ├── Dsp/               # signal primitives: FFT convolution, fade, extend, sine
 │   ├── Engine/            # hop-aligned engine seam: Engine.hpp, HopScheduler (JUCE-light)
+│   ├── Fft/               # transform seam: IFft contract + naive Dft oracle (JUCE-light)
+│   ├── FftJuce/           # the one JUCE-aware IFft adapter (calibrated engine gain, D-006)
 │   └── Entangle/          # JUCE plugin shell — INTENTIONALLY UNDOCUMENTED (§12)
 ├── tools/                 # OfflineRender: offline harness driving the plugin's shared code
 ├── cmake/                 # EntangleTestFramework.cmake — test-framework wiring (D-005)
@@ -70,11 +72,13 @@ Targets present after a configure (`cmake --build build --target help`):
 | `Engine` | Static library for `src/Engine` (engine seam + `HopScheduler`); links `Container`. |
 | `OfflineRender` | Console harness that renders through the plugin's shared code; registered with CTest. |
 | `ContainerTests`, `EngineTests` | Catch2 console test programs (§10). |
-| `Fft`, `Dft` | Transform libraries reachable through the root include path. |
+| `FftTests`, `FftJuceTests` | Catch2 console test programs (§10); `FftJuceTests` links JUCE, `FftTests` does not. |
+| `Fft` | Static library for `src/Fft` — `fft::IFft` contract + `fft::Dft` oracle. JUCE-light. |
+| `FftJuce` | Static library for `src/FftJuce` — `fft::JuceFft`, the only JUCE-aware transform. Links `Fft` + `juce::juce_dsp` (D-006). |
 | `EntangleCatch2` | The Catch2 this repo builds itself, from pinned amalgamated sources (§10). |
 
-`Container` and `Engine` are registered in `src/CMakeLists.txt` and carry their own
-`target_include_directories(... PUBLIC ...)`, so consumers `target_link_libraries`
+`Container`, `Engine`, `Fft` and `FftJuce` are registered in `src/CMakeLists.txt` and carry
+their own `target_include_directories(... PUBLIC ...)`, so consumers `target_link_libraries`
 against them instead of leaning on the root `include_directories`.
 Generated plugin bundles land under
 `build/src/Entangle/vstplug_artefacts/{VST3,Standalone}/`. The path has no build-type
@@ -321,6 +325,8 @@ its contract.
 | `src/Dsp` | `src/Dsp/README.md` | to write — primitives, their contracts and tolerances |
 | `src/Container` | `src/Container/README.md` | written — ring contract, capacity bound, threading |
 | `src/Engine` | `src/Engine/README.md` | written — engine seam, scheduler contract, ring sizing |
+| `src/Fft` | `src/Fft/README.md` | written — `IFft` contract, spectrum layout, normalisation, threading |
+| `src/FftJuce` | `JuceFft.hpp` + D-006/F-003 | no separate README — the gain-calibration rationale lives in the decision log |
 | `src/Entangle` | `src/Entangle/README.md` | deferred — shell is being rewritten (§13) |
 
 A component `README.md` covers: purpose, public contract, threading assumptions,

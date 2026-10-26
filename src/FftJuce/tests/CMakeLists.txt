@@ -1,0 +1,3 @@
+add_executable(FftJuceTests JuceFftTests.cpp)
+target_link_libraries(FftJuceTests PRIVATE FftJuce EntangleCatch2)
+catch_discover_tests(FftJuceTests)

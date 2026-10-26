@@ -84,6 +84,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxrandr-dev \
         libcurl4-openssl-dev \
         libjack-jackd2-dev \
+        libfftw3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # The -18 packages install only versioned binaries; AGENTS.md and muscle memory

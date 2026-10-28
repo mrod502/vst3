@@ -13,6 +13,10 @@ volumes:
     # chat state persist here. No host file outside this repo is written by the container.
     name: vst3-home
   build:
+    # Every container build tree: build/debug, build/release. A named volume lives in the
+    # VM's filesystem, so no container build is host-visible -- and `rm -rf build` on the
+    # host does not clear these; that is `docker compose exec vst3-dev rm -rf
+    # /workspace/build/<config>`.
     name: vst3-build
   tmp:
     name: vst3-tmp
@@ -49,9 +53,13 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - .:/workspace
-      # The Linux build tree is a volume, not the host directory: a CMakeCache.txt
+      # The Linux build trees are a volume, not the host directory: a CMakeCache.txt
       # configured by the host's AppleClang cannot be reused by the container's
       # gcc/clang, and sharing one directory clobbers whichever side reconfigures.
+      # The shield is path-exact, so every build tree must sit under build/ (build/debug,
+      # build/release). Anywhere else it reaches the host through the bind mount above,
+      # owned by the container's numeric uid -- and a tree containing a uid the host cannot
+      # map is one `rm -rf` failure on a directory it cannot unlink.
       - build:/workspace/build
       - ${HOME}/.gitconfig:/home/dev/.gitconfig:ro
       - ${HOME}/.ssh:/home/dev/.ssh:ro

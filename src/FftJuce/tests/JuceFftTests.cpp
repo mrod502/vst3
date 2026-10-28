@@ -1,12 +1,15 @@
 #include <Dft.hpp>
 #include <Fft.hpp>
 #include <JuceFft.hpp>
+#include <Spectral.hpp>
 
 #include <catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <new>
@@ -203,6 +206,104 @@ TEST_CASE("JuceFft allocates nothing inside forward or inverse", "[jucefft]")
     }
 
     REQUIRE(allocationCount == 0);
+}
+
+namespace
+{
+std::vector<float> forwardInto(const fft::IFft& engine, const std::vector<float>& in)
+{
+    std::vector<float> bins(static_cast<std::size_t>(in.size() + 2), kUnwritten);
+    engine.forward(in.data(), bins.data());
+    return bins;
+}
+
+std::vector<float> productOf(const fft::IFft& engine, const std::vector<float>& a,
+                             const std::vector<float>& b)
+{
+    const int size = static_cast<int>(a.size());
+    const auto binsA = forwardInto(engine, a);
+    const auto binsB = forwardInto(engine, b);
+    std::vector<float> product(static_cast<std::size_t>(size + 2), kUnwritten);
+    fft::multiplyHalfSpectrum(binsA.data(), binsB.data(), product.data(), size);
+    return product;
+}
+
+bool sameBits(float x, float y) noexcept
+{
+    return std::bit_cast<std::uint32_t>(x) == std::bit_cast<std::uint32_t>(y);
+}
+}
+
+TEST_CASE("Spectral multiply through JuceFft matches the Dft circular convolution", "[jucefft]")
+{
+    // The first test that feeds a caller-authored spectrum — a product, rather than a transform's
+    // own output — into JuceFft::inverse, which is the path the grain engine walks in M2 item 6.
+    // Compared in the time domain, where both paths must land on the same circular convolution.
+    // The oracle accumulates in double and this engine does not, so the bound is peak-relative.
+    constexpr double kRelativeTolerance = 1e-4;
+
+    for (const int size : kSizes)
+    {
+        const fft::Dft oracle(size);
+        const fft::JuceFft juce(size);
+        const auto a = makeInput(size, 0x5EED);
+        const auto b = makeInput(size, 0xABCD);
+
+        std::vector<float> expected(static_cast<std::size_t>(size), kUnwritten);
+        std::vector<float> actual(static_cast<std::size_t>(size), kUnwritten);
+
+        const auto oracleProduct = productOf(oracle, a, b);
+        oracle.inverse(oracleProduct.data(), expected.data());
+        const auto juceProduct = productOf(juce, a, b);
+        juce.inverse(juceProduct.data(), actual.data());
+
+        double peak = 0.0;
+        for (const float value : expected)
+            peak = std::max(peak, std::abs(static_cast<double>(value)));
+        const double bound = kRelativeTolerance * std::max(peak, 1.0);
+
+        double worst = 0.0;
+        for (int n = 0; n < size; ++n)
+            worst = std::max(worst, std::abs(static_cast<double>(actual[static_cast<std::size_t>(n)])
+                                             - static_cast<double>(expected[static_cast<std::size_t>(n)])));
+
+        INFO("F=" << size << " peak=" << peak << " worst=" << worst << " bound=" << bound);
+        REQUIRE(worst < bound);
+    }
+}
+
+TEST_CASE("Spectral multiply leaves JuceFft::inverse blind to the cardinal imaginary slots",
+          "[jucefft]")
+{
+    // A caller-authored product spectrum, cardinal imaginary slots poisoned, must still round-trip
+    // to the same samples — which is what item 6 relies on when it hands JuceFft::inverse a
+    // spectrum the engine never produced.
+    //
+    // This is NOT a guard on the zeroing in JuceFft::inverse: deleting those two statements was
+    // measured to leave this test green, because the even-n c2r the FFTW engine runs ignores
+    // exactly these slots. The zeroing stays as engine-portable hygiene (vDSP packs Nyquist into
+    // DC's imaginary slot), but no test in this container can distinguish it.
+    for (const int size : kSizes)
+    {
+        const fft::JuceFft juce(size);
+        auto product = productOf(juce, makeInput(size, 0x1234), makeInput(size, 0x5678));
+        auto poisoned = product;
+        poisoned[1] = kUnwritten;
+        poisoned[static_cast<std::size_t>(size + 1)] = std::numeric_limits<float>::infinity();
+
+        std::vector<float> clean(static_cast<std::size_t>(size), kUnwritten);
+        std::vector<float> result(static_cast<std::size_t>(size), kUnwritten);
+        juce.inverse(product.data(), clean.data());
+        juce.inverse(poisoned.data(), result.data());
+
+        INFO("F=" << size);
+        for (int n = 0; n < size; ++n)
+        {
+            INFO("n=" << n << " clean=" << clean[static_cast<std::size_t>(n)]
+                      << " poisoned=" << result[static_cast<std::size_t>(n)]);
+            CHECK(sameBits(clean[static_cast<std::size_t>(n)], result[static_cast<std::size_t>(n)]));
+        }
+    }
 }
 
 #if defined(__linux__)

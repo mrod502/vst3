@@ -19,3 +19,9 @@ target_link_libraries(OfflineRender PRIVATE
 if(BUILD_TESTING)
     add_test(NAME OfflineRender COMMAND OfflineRender)
 endif()
+
+# The M2 §6.7 CPU baseline. Plain executable rather than juce_add_console_app: it needs the
+# transform, not the plugin shell. Deliberately not registered with CTest — wall-clock numbers on a
+# shared machine are a measurement to record for M7, not a pass/fail signal.
+add_executable(CpuBaseline CpuBaseline.cpp)
+target_link_libraries(CpuBaseline PRIVATE Grain Engine Fft FftJuce)

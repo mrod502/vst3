@@ -35,6 +35,10 @@
 # Build directory
 
 /build
+# Retired name for the Release tree (pre build/release): kept ignored so a stale
+# command cannot dirty the tree.
+/build-rel
+/CMakeCache.txt
 
 # scratch files
 /src/scratch

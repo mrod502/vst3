@@ -6,8 +6,11 @@ namespace fft
 
     Layout and scaling are specified by this header, not by whichever engine is installed:
     bins[2k] = Re, bins[2k + 1] = Im for k in [0, F/2]; forward is unnormalised, inverse
-    carries 1/F. So a bare inverse(forward(x)) == x with no factor left over, and the 1/F a
-    spectral product needs is the caller's to fold into its own gain table.
+    carries 1/F. So a bare inverse(forward(x)) == x with no factor left over — and that 1/F is
+    the entire normalisation a spectral product needs: with both spectra unnormalised,
+    inverse(a·b) is the circular convolution of the two time signals, owing no further factor.
+    Dividing by F a second time costs 20·log10(F) dB of level, so the gain table carries the
+    window/OLA correction only (F-004).
 
     Bins [0, F/2] is the half-spectrum: bin 0 is DC and bin F/2 is Nyquist. For real input
     both are real, so an implementation writes zero into bins[1] and bins[F + 1] and nothing

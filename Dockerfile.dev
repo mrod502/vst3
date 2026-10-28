@@ -123,9 +123,11 @@ RUN set -eux; \
              /opt/qwen-seed; \
     chown -R "${USERNAME}:${GROUP}" "/home/${USERNAME}"
 
-# /workspace/build is the build volume at runtime. Docker seeds an empty named
-# volume from the image's path here, so the directory must exist and already belong
-# to the dev user or the volume mounts root-owned and CMake cannot write CMakeFiles.
+# /workspace/build is the build volume at runtime, holding every container tree
+# (build/debug, build/release). Docker seeds an empty named volume from the image's path
+# here, so the directory must exist and already belong to the dev user or the volume
+# mounts root-owned and CMake cannot write CMakeFiles. Seeding happens only when the
+# volume is created, so an existing root-owned vst3-build survives this layer.
 RUN mkdir -p /workspace/build && chown -R ${USERNAME} /workspace
 
 RUN git config --system --add safe.directory /workspace

@@ -1,7 +1,9 @@
 #!/bin/bash
+# Usage: cmd/build [debug|release]   (default: release) — see cmd/install for the layout.
 
 buildParallelism() {
     nproc --all
 }
 
-mkdir -p build && cd build && cmake --build . -j $(buildParallelism)
+cd "$(dirname "$0")/.." || exit 1
+cmake --build "build/${1:-release}" -j $(buildParallelism)

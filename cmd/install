@@ -1,3 +1,15 @@
 #!/bin/bash
+# Usage: cmd/install [debug|release]   (default: release)
+# Builds live in build/<config> relative to the repo root, never an absolute path: in the
+# container the same relative path resolves under /workspace/build, which is a volume.
 
-git submodule update --init --recursive && mkdir -p build && cd build && cmake -G Ninja ..
+cd "$(dirname "$0")/.." || exit 1
+config="${1:-release}"
+
+case "$config" in
+    debug)   buildType=Debug ;;
+    release) buildType=Release ;;
+    *)       echo "usage: cmd/install [debug|release]" >&2; exit 2 ;;
+esac
+
+git submodule update --init --recursive && cmake -G Ninja -S . -B "build/$config" -DCMAKE_BUILD_TYPE="$buildType"

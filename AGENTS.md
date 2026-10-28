@@ -62,7 +62,7 @@ vst3/                      # CMake project "vstplug", C++23
 └── AGENTS.md              # this file
 ```
 
-Targets present after a configure (`cmake --build build --target help`):
+Targets present after a configure (`cmake --build build/release --target help`):
 
 | Target | What it is |
 |---|---|
@@ -86,14 +86,17 @@ Targets present after a configure (`cmake --build build --target help`):
 their own `target_include_directories(... PUBLIC ...)`, so consumers `target_link_libraries`
 against them instead of leaning on the root `include_directories`.
 Generated plugin bundles land under
-`build/src/Entangle/vstplug_artefacts/{VST3,Standalone}/`, or under
+`build/<config>/src/Entangle/vstplug_artefacts/{VST3,Standalone}/`, or under
 `vstplug_artefacts/Debug/` when the cache carries `CMAKE_BUILD_TYPE=Debug`. The segment
 tracks the build type, not the generator — measured 2026-10-26 on one macOS arm64 tree,
 both under the pinned Ninja generator: a configure with `CMAKE_BUILD_TYPE` empty emits
 `vstplug_artefacts/VST3/`, the same tree carrying `Debug` emits
-`vstplug_artefacts/Debug/VST3/`. `cmd/install` passes no build type and does not clear a
-cached one, so the two spellings sit side by side as stale siblings; verify with
-`find build -name '*.vst3'` rather than trusting either spelling.
+`vstplug_artefacts/Debug/VST3/`. The root `CMakeLists.txt` now defaults a single-config
+configure to `Release` (F-008), so a configured tree emits `vstplug_artefacts/Release/VST3/`.
+The guard tests the value, not its presence, so a tree whose cache still carries an empty
+`CMAKE_BUILD_TYPE` self-heals to `Release` on its next reconfigure; only artefacts already
+built under the old path linger. Verify with `find build -name '*.vst3'` rather than
+trusting either spelling.
 
 Notation shared by code, tests and docs — never invent synonyms, and never use
 `B` for block size:
@@ -125,20 +128,35 @@ changing code in that area; they are not part of this file's context.
 ## 4. Build and Validation
 
 ```bash
-# First time, or whenever a CMakeLists.txt changed:
-make install          # git submodule update --init --recursive && cmake .. into ./build
+# Every build tree is build/<config> at the repo root — build/debug or build/release.
+# Relative, never absolute: inside the container the same path resolves under
+# /workspace/build, which is the vst3-build volume.
 
-# Everything, in parallel (Unix Makefiles, CMAKE_BUILD_TYPE=Debug by default):
+# First time, or whenever a CMakeLists.txt changed (release unless told otherwise):
+make install                    # git submodule update --init --recursive && configure
+make install BUILD_TYPE=Debug   # -> cmd/install debug, configuring build/debug
+
+# Everything, in parallel (Ninja; BUILD_TYPE defaults to Release — F-008):
 make build
 
 # Iterating — prefer the narrowest target that proves the change:
-cmake --build build --target Dsp -j8
-cmake --build build --target vstplug_VST3 -j8
+cmake --build build/release --target Dsp -j8
+cmake --build build/release --target vstplug_VST3 -j8
 
 # Tests — Console programs discovered by CTest (§10):
-ctest --test-dir build --output-on-failure
-ctest --test-dir build -R OfflineRender --output-on-failure
+ctest --test-dir build/release --output-on-failure
+ctest --test-dir build/release -R OfflineRender --output-on-failure
 ```
+
+A build directory anywhere else escapes that shield. In the container it writes through
+the `.:/workspace` bind mount onto the host carrying the container's numeric uid, which is
+how a host `rm -rf build` starts failing partway with `permission denied` on a directory it
+cannot unlink. `configure_file` is the one exception CMake makes, writing
+`src/Entangle/Entangle.h` back into the source tree (§2).
+
+Host and container trees of the same name are different storage — a named volume lives in
+the VM, so `rm -rf build` on the host never clears a container tree. Clear one with
+`docker compose exec vst3-dev rm -rf /workspace/build/<config>`.
 
 Validation bar for a claimed-complete change: the narrowest affected library
 target compiles, then `vstplug_VST3` links, then tests pass where they exist.
@@ -286,7 +304,7 @@ Rules that keep them clean:
 
 Tests are wired: `include(CTest)` at the root plus one console test target per
 library, discovered by `catch_discover_tests` and run with
-`ctest --test-dir build --output-on-failure`.
+`ctest --test-dir build/<config> --output-on-failure`.
 
 * **Do not couple new tests to `Catch2`/`Catch2WithMain`** — those target names are
   already taken by the third-party submodule scheduled for removal, so

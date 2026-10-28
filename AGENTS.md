@@ -46,14 +46,15 @@ vst3/                      # CMake project "vstplug", C++23
 ├── cmd/install            # submodule init + CMake configure into ./build
 ├── cmd/build              # cmake --build ./build -j $(nproc)
 ├── src/
-│   ├── CMakeLists.txt     # add_subdirectory(Entangle, Dsp, Container, Engine, Fft, FftJuce)
+│   ├── CMakeLists.txt     # add_subdirectory(Entangle, Dsp, Container, Engine, Fft, FftJuce, Grain)
 │   ├── Container/         # container primitives: CircularBuffer (JUCE-light)
 │   ├── Dsp/               # signal primitives: FFT convolution, fade, extend, sine
 │   ├── Engine/            # hop-aligned engine seam: Engine.hpp, HopScheduler (JUCE-light)
-│   ├── Fft/               # transform seam: IFft contract + naive Dft oracle (JUCE-light)
+│   ├── Fft/               # transform seam: IFft contract, naive Dft oracle, half-spectrum product (JUCE-light)
 │   ├── FftJuce/           # the one JUCE-aware IFft adapter (calibrated engine gain, D-006)
+│   ├── Grain/             # mode 1 wet path: GrainHistory, OlaAccumulator, window/gain, GrainConvolutionEngine (JUCE-light)
 │   └── Entangle/          # JUCE plugin shell — INTENTIONALLY UNDOCUMENTED (§12)
-├── tools/                 # OfflineRender: offline harness driving the plugin's shared code
+├── tools/                 # OfflineRender (offline harness) and CpuBaseline (M7 cost data)
 ├── cmake/                 # EntangleTestFramework.cmake — test-framework wiring (D-005)
 ├── juce/                  # submodule: juce-framework/juce @ >= 9.0.4
 ├── plan/                  # roadmap docs, not part of this index
@@ -73,18 +74,26 @@ Targets present after a configure (`cmake --build build --target help`):
 | `OfflineRender` | Console harness that renders through the plugin's shared code; registered with CTest. |
 | `ContainerTests`, `EngineTests` | Catch2 console test programs (§10). |
 | `FftTests`, `FftJuceTests` | Catch2 console test programs (§10); `FftJuceTests` links JUCE, `FftTests` does not. |
-| `Fft` | Static library for `src/Fft` — `fft::IFft` contract + `fft::Dft` oracle. JUCE-light. |
+| `Fft` | Static library for `src/Fft` — `fft::IFft` contract, `fft::Dft` oracle, `fft::multiplyHalfSpectrum` product. JUCE-light. |
 | `FftJuce` | Static library for `src/FftJuce` — `fft::JuceFft`, the only JUCE-aware transform. Links `Fft` + `juce::juce_dsp` (D-006). |
+| `Grain` | Static library for `src/Grain` — mode 1 wet path: `GrainHistory`, `OlaAccumulator`, `GrainWindow`, `GrainConvolutionEngine`. JUCE-light; links `Engine` + `Fft`. |
+| `GrainTests` | Catch2 console program (§10): primitives plus the engine on the `fft::Dft` oracle. No JUCE. |
+| `GrainEngineJuceTests` | Catch2 program running the **same** `GrainEngineChecks.hpp` assertions on `fft::JuceFft`; the only Grain test that links JUCE. |
+| `CpuBaseline` | Console measurement of per-callback cost for M7 (F-007). Deliberately not in CTest — wall-clock on a shared host is not a pass/fail signal. |
 | `EntangleCatch2` | The Catch2 this repo builds itself, from pinned amalgamated sources (§10). |
 
-`Container`, `Engine`, `Fft` and `FftJuce` are registered in `src/CMakeLists.txt` and carry
+`Container`, `Engine`, `Fft`, `FftJuce` and `Grain` are registered in `src/CMakeLists.txt` and carry
 their own `target_include_directories(... PUBLIC ...)`, so consumers `target_link_libraries`
 against them instead of leaning on the root `include_directories`.
 Generated plugin bundles land under
-`build/src/Entangle/vstplug_artefacts/{VST3,Standalone}/`. The path has no build-type
-segment under the pinned Ninja generator; a tree configured before the pin put them
-under `vstplug_artefacts/Debug/` instead, so verify with `find build -name '*.vst3'`
-rather than trusting either spelling.
+`build/src/Entangle/vstplug_artefacts/{VST3,Standalone}/`, or under
+`vstplug_artefacts/Debug/` when the cache carries `CMAKE_BUILD_TYPE=Debug`. The segment
+tracks the build type, not the generator — measured 2026-10-26 on one macOS arm64 tree,
+both under the pinned Ninja generator: a configure with `CMAKE_BUILD_TYPE` empty emits
+`vstplug_artefacts/VST3/`, the same tree carrying `Debug` emits
+`vstplug_artefacts/Debug/VST3/`. `cmd/install` passes no build type and does not clear a
+cached one, so the two spellings sit side by side as stale siblings; verify with
+`find build -name '*.vst3'` rather than trusting either spelling.
 
 Notation shared by code, tests and docs — never invent synonyms, and never use
 `B` for block size:
@@ -254,9 +263,11 @@ Seams this project is built around:
 
 Rules that keep them clean:
 
-* **DSP is JUCE-light.** Nothing in `src/Dsp` or `src/Container` includes a JUCE
-  header. JUCE stays at the plugin boundary so components compile and test in a
-  console harness without an `AudioProcessor`.
+* **DSP is JUCE-light.** Nothing in `src/Dsp`, `src/Container`, `src/Engine`, `src/Fft` or
+  `src/Grain` includes a JUCE header. JUCE stays at the plugin boundary so components compile and
+  test in a console harness without an `AudioProcessor`. Where a JUCE-backed implementation of a
+  JUCE-light contract is needed, it lives in its own library (`FftJuce`) or is injected through a
+  factory (`grain::TransformFactory`) — never compiled into the light target.
 * **Depend on the interface, not the implementation.** Buffers, sizes and rates
   arrive as arguments. No singletons, no ambient configuration, no hidden
   globals.
@@ -325,8 +336,9 @@ its contract.
 | `src/Dsp` | `src/Dsp/README.md` | to write — primitives, their contracts and tolerances |
 | `src/Container` | `src/Container/README.md` | written — ring contract, capacity bound, threading |
 | `src/Engine` | `src/Engine/README.md` | written — engine seam, scheduler contract, ring sizing |
-| `src/Fft` | `src/Fft/README.md` | written — `IFft` contract, spectrum layout, normalisation, threading |
+| `src/Fft` | `src/Fft/README.md` | written — `IFft` contract, spectrum layout, normalisation, `multiplyHalfSpectrum`, threading |
 | `src/FftJuce` | `JuceFft.hpp` + D-006/F-003 | no separate README — the gain-calibration rationale lives in the decision log |
+| `src/Grain` | `src/Grain/README.md` | written — wet-path seam, time origin and gain, OLA order (F-005), threading, two-backend test layout |
 | `src/Entangle` | `src/Entangle/README.md` | deferred — shell is being rewritten (§13) |
 
 A component `README.md` covers: purpose, public contract, threading assumptions,

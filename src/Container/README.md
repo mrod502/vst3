@@ -36,8 +36,8 @@ None. `<algorithm>`, `<cstddef>`, `<cstdint>`, `<vector>`.
 ## Build and test
 
 ```bash
-cmake --build build --target Container -j4      # registered in src/CMakeLists.txt
-ctest --test-dir build -R CircularBuffer --output-on-failure
+cmake --build build/release --target Container -j4      # registered in src/CMakeLists.txt
+ctest --test-dir build/release -R CircularBuffer --output-on-failure
 ```
 
 Tests live in `tests/` and link no JUCE.

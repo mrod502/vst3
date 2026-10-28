@@ -63,8 +63,8 @@ The scheduler borrows the `Engine&`; the shell owns its lifetime.
 ## Build and test
 
 ```bash
-cmake --build build --target Engine -j4
-ctest --test-dir build -R HopScheduler --output-on-failure
+cmake --build build/release --target Engine -j4
+ctest --test-dir build/release -R HopScheduler --output-on-failure
 ```
 
 Tests live in `tests/` and link no JUCE.

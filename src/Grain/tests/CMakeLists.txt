@@ -7,7 +7,7 @@ add_executable(
     RingAndWindowTests.cpp
     )
 
-target_link_libraries(GrainTests PRIVATE Grain Fft EntangleCatch2)
+target_link_libraries(GrainTests PRIVATE Grain Fft EntangleCatch2 EntangleAsserts)
 catch_discover_tests(GrainTests)
 
 # The same integration checks over fft::JuceFft, so §6.1's "on both transforms" is two binaries

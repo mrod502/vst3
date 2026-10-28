@@ -50,8 +50,8 @@ by one thread. Scratch is one set reused across channels, sized in `prepare` to 
 ## Build and test
 
 ```bash
-cmake --build build --target Grain -j4
-ctest --test-dir build -R grain --output-on-failure
+cmake --build build/release --target Grain -j4
+ctest --test-dir build/release -R grain --output-on-failure
 ```
 
 Two test programs run one shared set of assertions (`tests/GrainEngineChecks.hpp`) — `GrainTests` on

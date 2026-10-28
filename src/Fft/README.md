@@ -99,9 +99,9 @@ special-casing legal, and keeping the only consumer next to the rule means they 
 Depends on nothing but `<cmath>`/`<vector>`; no JUCE.
 
 ```bash
-cmake --build build --target Fft -j4
-ctest --test-dir build -R Dft --output-on-failure
-ctest --test-dir build -R Spectral --output-on-failure
+cmake --build build/release --target Fft -j4
+ctest --test-dir build/release -R Dft --output-on-failure
+ctest --test-dir build/release -R Spectral --output-on-failure
 ```
 
 Tests live in `tests/` and link no JUCE. Case names carry the `Dft` or `Spectral` prefix because

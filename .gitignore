@@ -46,6 +46,9 @@
 # the main binary
 /main
 
+# OfflineRender writes its check WAVs here on every run (delta-L*.wav, ~20 MB).
+/offline-render/
+
 
 /CMakeFiles
 /research

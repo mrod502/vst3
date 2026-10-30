@@ -49,8 +49,13 @@ relaxed ordering — a diagnostic read-out that nothing synchronises on.
 
 None. `Dsp` links no library but `EntangleAsserts` (private), and consumers `target_link_libraries`
 against it: `Engine` uses it PUBLIC for the two stages, holding one instance of each. Nothing consumes
-`LevelDetector` yet — its caller is the normalizer, still behind the decision
-`plan/M3-impl-plan/INDEX.md` §9 records.
+`LevelDetector` yet. Its caller is the normalizer, and the decision that gated that caller landed the
+same day this class did — **D-015** (2026-10-30): target `√(envA · envB)`, this class's `envelope()` as
+the driving reading, a UI-set silence floor with unity gain below it. The class is unchanged by it and
+stays policy-free; the point of exposing the windowed pair alongside the envelope was exactly this, that
+the rejected per-grain scheme stays live on the same object so the target can be revisited without
+touching this library. Implementation is `plan/M3-impl-plan/04-level-normalizer.md` — written 2026-10-30,
+not yet started — and it plans to hold three of this class, one per bus, all reading `envelope()`.
 
 ## Build and test
 

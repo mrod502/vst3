@@ -5,25 +5,30 @@
     assumption about it, and the program is plain console PASS/FAIL with a nonzero exit.
 
     The checks map to plan/M2-item-6-impl-plan.md §5, with M3 item 1 re-pointing 3 and 5 at the mix
-    law and adding 10:
+    law and adding 10, and M3 item 2 splitting 3 by chain variant and adding 11:
       1  the shell adds nothing       — render vs the same engine+scheduler chain built directly
       2  block-size invariance        — two block sequences summing to the same total
       3  delta anchor                 — the wet window at n0+R+L, then silence; at the dial's centre
-                                        the law gives the dry path weight 0, so n0+R is silent too
+                                        the law gives the dry path weight 0, so n0+R is silent too.
+                                        The physics run on the raw-wet variant; the shipped chain is
+                                        held against itself and its reshaping reported (C3, A9, B6)
       4  declared latency             — R == hop for every pair the UI can express, and L moves it
                                         never
       5  dry path                     — no sidechain is A delayed by R, bit-exact; a connected but
                                         silent bus is exact zeros; the render at the dial's centre is
-                                        the wet stream
+                                        the wet stream through the two safety stages
       6  numeric hygiene              — no NaN or inf, silence in is silence out
-      7  headroom                     — peak per configuration and peak versus dial position,
-                                        reported not gated — the measurement input for the blocked
-                                        normalizer's target decision
+      7  headroom                     — peak per configuration and peak versus dial position: the
+                                        level is reported for the blocked normalizer's target, the
+                                        post-clip ceiling is normative, and B7's engagement and click
+                                        figures ride along
       8  lifecycle                    — reset, hop round-trip, layout change mid-session
       9  no throw                     — every (hop, L) pair survives prepareToPlay
       10 mix law                      — the dial endpoints bit-exact at the D-009 levels, the pin
                                         over the whole dial travel, bypass and output gain, and a
                                         parameter state written before M3 still loading
+      11 wet DC                       — a 1 % offset on both buses and the DC the convolved path
+                                        carries with the blocker out and in (A10)
 
     Inputs are seeded noise in a playing range, not the raw integer ramp this harness used to feed:
     §5.7 asks for a peak-level number, which is meaningless on a stream that reaches 1e6. */
@@ -33,6 +38,8 @@
 #include <MixEngine.hpp>
 #include <GrainEngine.hpp>
 #include <HopScheduler.hpp>
+#include <DcBlocker.hpp>
+#include <SoftClipper.hpp>
 
 #include "EngineChain.h"
 #include "EntangleProcessor.h"
@@ -332,15 +339,20 @@ struct MixSetting
 };
 
 /** The shipped chain with no shell in it, built by the same builder the shell calls
-    (entangle::makeShippedChain) at the configuration the shell is configured to. §5.1 — anything the
+    (entangle::makeChain) at the configuration the shell is configured to. §5.1 — anything the
     shell converts, delays or gains shows up here and nowhere else. Composing the chain a second way
-    would stop this comparing against what ships, which is why the builder is shared. */
+    would stop this comparing against what ships, which is why the builder is shared.
+
+    The variant is part of the leg's identity, not a switch on convenience: M3 item 2 criterion C1
+    requires every leg to say which chain it runs on, because an anchor measured through a chain that
+    has quietly gained a high-pass no longer pins the engine's gain. */
 Stream renderReference(const Shape &shape, const Stream &a, const Stream &b, int channels,
                        int sidechainChannels, const std::vector<int> &blocks,
-                       const MixSetting &mix = {})
+                       const MixSetting &mix = {},
+                       entangle::ChainVariant variant = entangle::ChainVariant::Shipped)
 {
     static const JuceTransformFactory factory; ///< outlives every engine built below it
-    auto wet = entangle::makeShippedChain(factory);
+    auto wet = entangle::makeChain(factory, variant);
 
     entangle::ChainConfig chain;
     chain.sampleRate = kSampleRate;
@@ -443,6 +455,99 @@ Stream renderPureWet(const Shape &shape, const Stream &a, const Stream &b, int c
     return out;
 }
 
+/* The two safety stages re-applied by hand to a raw wet stream, in decision C's order: block the
+   convolved samples, fold the law's centre coefficient in, clip last.
+
+   Duplicated from MixEngine::processHop on purpose. Criterion C3 endorses a by-hand reference so the
+   shipped chain can still be asserted against something independent, and names the risk that comes
+   with it: if the engine's stage order changes and this copy does not, §5.1 — which runs the shell
+   against the real builder — is the leg that says so. The blocker is fed a whole channel in one call;
+   criterion A6 proves its state advances one sample at a time, so a hop-by-hop feed yields the same
+   samples. */
+Stream shapedBySafetyStages(const Stream &raw, float gainDb, bool blockDc, bool clip)
+{
+    Stream out = raw;
+    dsp::DcBlocker blocker;
+    if (blockDc)
+        blocker.prepare(kSampleRate, static_cast<int>(out.size()));
+    dsp::SoftClipper clipper;
+    const float gain = static_cast<float>(std::pow(10.0, static_cast<double>(gainDb) / 20.0));
+
+    for (std::size_t channel = 0; channel < out.size(); ++channel)
+    {
+        auto &samples = out[channel];
+        if (blockDc)
+            blocker.processChannel(channel, samples.data(), samples.size());
+        if (gain != 1.0f)
+            for (auto &sample : samples)
+                sample = gain * sample;
+        if (clip)
+            clipper.processChannel(samples.data(), samples.size());
+    }
+    return out;
+}
+
+/** The DC component of a render: the largest |mean| over the last `window` samples of any channel,
+    which is the spectral DC bin the wet path would carry. Reported over a settled tail rather than
+    the whole render, because the head of every pass here is silence. */
+double dcComponentOf(const Stream &stream, std::size_t window)
+{
+    double worst = 0.0;
+    for (const auto &channel : stream)
+    {
+        if (channel.empty())
+            continue;
+        const std::size_t from = window < channel.size() ? channel.size() - window : 0;
+        double sum = 0.0;
+        for (std::size_t i = from; i < channel.size(); ++i)
+            sum += static_cast<double>(channel[i]);
+        worst = std::max(worst, std::abs(sum / static_cast<double>(channel.size() - from)));
+    }
+    return worst;
+}
+
+/** How much of a render the clipper is actually shaping — the fraction B7 asks for, where "engaged at
+    default settings" is either a measured fact or a guess. */
+double fractionAboveKnee(const Stream &stream)
+{
+    std::size_t above = 0;
+    std::size_t total = 0;
+    for (const auto &channel : stream)
+        for (const float sample : channel)
+        {
+            above += std::abs(sample) > dsp::SoftClipper::knee ? 1U : 0U;
+            ++total;
+        }
+    return total != 0 ? static_cast<double>(above) / static_cast<double>(total) : 0.0;
+}
+
+/** 01 criterion 6's click prototype: max |x[n] - 2x[n-1] + x[n-2]| over every channel. */
+double secondDifferencePeak(const Stream &stream)
+{
+    double worst = 0.0;
+    for (const auto &channel : stream)
+        for (std::size_t i = 2; i < channel.size(); ++i)
+        {
+            const double d2 = std::abs(static_cast<double>(channel[i])
+                                       - 2.0 * static_cast<double>(channel[i - 1])
+                                       + static_cast<double>(channel[i - 2]));
+            worst = std::max(worst, d2);
+        }
+    return worst;
+}
+
+/** Where a render first clears `threshold` — the index criterion B6 requires not to move when a stage
+    is installed, since a stage that delays would move it by exactly its delay. */
+std::size_t arrivalIndex(const Stream &stream, double threshold)
+{
+    const std::size_t length = stream.empty() ? 0 : stream[0].size();
+    for (std::size_t i = 0; i < length; ++i)
+        for (const auto &channel : stream)
+            if (std::abs(static_cast<double>(channel[i])) > threshold)
+                return i;
+    return std::numeric_limits<std::size_t>::max();
+}
+
 bool expectIdentical(const Stream &got, const Stream &want, const char *what)
 {
     if (got.size() != want.size())
@@ -515,6 +620,12 @@ double peakOf(const Stream &stream)
         for (const float sample : channel)
             peak = std::max(peak, static_cast<double>(std::abs(sample)));
     return peak;
+}
+
+/** Level of a ratio, for the legs that have to quote a reshaping in the unit the decision log uses. */
+double decibels(double ratio)
+{
+    return 20.0 * std::log10(ratio);
 }
 
 double hannAt(int i, int length) noexcept
@@ -611,6 +722,13 @@ bool checkBlockInvariance(int total)
 
 //==============================================================================
 // §5.3 — delta anchor, and the number behind §4.6's tail.
+/*  Split in two by M3 item 2 criterion C3. The physics legs — nothing before n0+R+L, a Hann of peak
+    1.0 inside the wet window, nothing after n0+R+2L-1 — run on the raw-wet variant: that is the
+    assertion that pins the engine's gain, and the shipped chain deliberately reshapes the response
+    (F-011), so a high-pass left in front of these legs would stop them meaning anything. The shipped
+    chain is then held against the same chain built without the shell, which is where a stage that
+    moves the arrival index or the latency is caught (B6), and the reshaping is measured rather than
+    assumed (A9). */
 bool checkDeltaAnchor(const Shape &shape, const juce::File &outputDirectory, bool keepAudio)
 {
     auto processor = makeProcessor();
@@ -618,6 +736,7 @@ bool checkDeltaAnchor(const Shape &shape, const juce::File &outputDirectory, boo
         return false;
 
     const int channels = processor->getChannelCountOfBus(true, 0);
+    const int sideChannels = processor->getChannelCountOfBus(true, 1);
     const int hop = shape.hop;
     /* n0 sits on the hop grid and above every L in the set the engine can be configured to for
        this shape, so the impulse arrives once the history ring is full rather than while it is
@@ -627,21 +746,32 @@ bool checkDeltaAnchor(const Shape &shape, const juce::File &outputDirectory, boo
     const auto blocks = blocksSummingTo(total, 0);
 
     const auto a = impulseStream(channels, total, n0);
-    const auto b = constantStream(processor->getChannelCountOfBus(true, 1), total, 1.0f);
-    const auto out = render(*processor, a, &b, blocks);
+    const auto b = constantStream(sideChannels, total, 1.0f);
+
+    /* The four renders this leg needs, each a named variant. All of them come from the one builder,
+       so "raw wet" cannot quietly mean a different chain from the shipped one minus two stages. */
+    const auto raw = renderReference(shape, a, b, channels, sideChannels, blocks, MixSetting{},
+                                     entangle::ChainVariant::RawWet);
+    const auto shipped = render(*processor, a, &b, blocks);
+    const auto shippedReference = renderReference(shape, a, b, channels, sideChannels, blocks);
+    /* The clipper with nothing in front of it. Criterion B6 asks that installing the stage does not
+       move the anchor's arrival, and the blocker reshapes the envelope on purpose, so an arrival
+       index taken across Shipped and RawWet measures the filter, not a delay. */
+    const auto clipperOnly = renderReference(shape, a, b, channels, sideChannels, blocks,
+                                             MixSetting{}, entangle::ChainVariant::ClipperOnly);
 
     const int latency = processor->getLatencySamples();
     const int length = EntangleAudioProcessor::clampGrainLength(shape.chosen, hop);
     std::cout << "[5.3] delta anchor H=" << hop << " L=" << length << " R=" << latency << " n0="
-              << n0 << "\n";
+              << n0 << " — physics legs on raw wet, shipped chain held against it below\n";
 
     bool passed = true;
     double worstWindow = 0.0;
     double worstSilence = 0.0;
 
-    for (std::size_t channel = 0; channel < out.size() && passed; ++channel)
+    for (std::size_t channel = 0; channel < raw.size() && passed; ++channel)
     {
-        const auto &stream = out[channel];
+        const auto &stream = raw[channel];
 
         /* (a) nothing at all before the wet window opens — including n0 + R, where this harness used
            to find the dry spike. At the dial's centre the law gives the dry path weight exactly 0, so
@@ -704,7 +834,7 @@ bool checkDeltaAnchor(const Shape &shape, const juce::File &outputDirectory, boo
     const int analyticFirst = n0 + latency + length;
     const int analyticLast = n0 + latency + 2 * length - 1;
     int lastAudible = -1;
-    for (const auto &channel : out)
+    for (const auto &channel : raw)
         for (int i = total - 1; i >= 0; --i)
         {
             const double magnitude = std::abs(static_cast<double>(channel[static_cast<std::size_t>(i)]));
@@ -726,10 +856,104 @@ bool checkDeltaAnchor(const Shape &shape, const juce::File &outputDirectory, boo
         passed = false;
     }
 
+    /* ---- the shipped chain (criterion C3). ----
+       The shell's render is held against the same builder's chain, which is §5.1's identity again but
+       at this shape; what it buys here is that everything below speaks about what ships without the
+       shell's own conversions in the way. */
+    passed = expectIdentical(shipped, shippedReference,
+                             "shipped chain through the shell == the same chain without it")
+             && passed;
+
+    /*  B6: the clipper adds no delay, measured on the response itself. The blocker is deliberately
+       out of this comparison — it reshapes the envelope by design, so the only thing that could move
+       the arrival index between these two variants is a delay in the clipper, which is what the
+       §5 discriminator "insert a one-sample delay in the clipper" is looking for. */
+    const std::size_t rawArrival = arrivalIndex(raw, kDeltaTolerance);
+    const std::size_t clipperArrival = arrivalIndex(clipperOnly, kDeltaTolerance);
+    if (clipperArrival != rawArrival)
+    {
+        std::cout << "  FAIL the clipper moved the wet arrival: raw wet at n" << rawArrival
+                  << ", clipper-only at n" << clipperArrival << "\n";
+        passed = false;
+    }
+    else
+    {
+        std::cout << "  ok   clipper-only arrival at n" << clipperArrival << " == raw wet's ("
+                  << "B6: the stage delays nothing; declared latency is §5.4)\n";
+    }
+
+    /*  A9: the change the blocker makes to this anchor, at the shipped corner — the measurement the
+       cutoff decision is taken from, since the anchor's own DC component is half its peak (a periodic
+       Hann's mean is 0.5) and its main lobe reaches only to its first null at 2*sr/L. */
+    {
+        const auto windowMean = [&](const Stream &stream) {
+            double worst = 0.0;
+            for (const auto &channel : stream)
+            {
+                double sum = 0.0;
+                for (int m = 0; m < length; ++m)
+                    sum += static_cast<double>(
+                        channel[static_cast<std::size_t>(analyticFirst + m)]);
+                worst = std::max(worst, std::abs(sum / static_cast<double>(length)));
+            }
+            return worst;
+        };
+
+        double worstDifference = 0.0;
+        for (std::size_t channel = 0; channel < raw.size(); ++channel)
+            for (std::size_t i = 0; i < raw[channel].size(); ++i)
+                worstDifference = std::max(
+                    worstDifference,
+                    std::abs(static_cast<double>(shipped[channel][i])
+                             - static_cast<double>(raw[channel][i])));
+
+        std::cout << "       A9 shipped vs raw: peak " << peakOf(raw) << " -> " << peakOf(shipped)
+                  << ", DC over the wet window " << windowMean(raw) << " -> " << windowMean(shipped)
+                  << ", max |difference| " << worstDifference << " = "
+                  << decibels(worstDifference / std::max(peakOf(raw), 1e-30))
+                  << " dB below the response peak\n";
+
+        /*  The sweep the corner is chosen from: the same class at every corner the milestone's "a few
+           Hz" could mean, run straight over the raw anchor as a physics probe — no shell, no law. The
+           window column is the deviation from the analytic Hann; "after support" is the largest sample
+           past n0+R+2L-1, where the anchor is exactly zero and anything left is the filter's own
+           transient, which is the figure that grows with L. */
+        std::cout << "       A9 corner probe on the raw anchor — corner Hz, worst |Hann - filtered|\n"
+                     "       over the wet window, filtered peak, max |y| past the analytic support:\n";
+        for (const double corner : {0.5, 1.0, 2.0, 5.0, 10.0, 20.0})
+        {
+            dsp::DcBlocker probe(corner);
+            probe.prepare(kSampleRate, static_cast<int>(raw.size()));
+            Stream filtered = raw;
+            double worstInWindow = 0.0;
+            for (std::size_t channel = 0; channel < filtered.size(); ++channel)
+            {
+                probe.processChannel(channel, filtered[channel].data(), filtered[channel].size());
+                for (int m = 0; m < length; ++m)
+                    worstInWindow = std::max(
+                        worstInWindow,
+                        std::abs(static_cast<double>(
+                                     filtered[channel][static_cast<std::size_t>(analyticFirst + m)])
+                                 - hannAt(m, length)));
+            }
+            double afterSupport = 0.0;
+            for (const auto &channel : filtered)
+                for (std::size_t i = static_cast<std::size_t>(analyticLast) + 1; i < channel.size(); ++i)
+                    afterSupport = std::max(afterSupport,
+                                            std::abs(static_cast<double>(channel[i])));
+
+            std::cout << "         " << corner << " Hz: window " << worstInWindow << ", peak "
+                      << peakOf(filtered) << ", past support " << afterSupport;
+            if (corner == dsp::DcBlocker::cornerHz)
+                std::cout << "   <- shipped";
+            std::cout << "\n";
+        }
+    }
+
     if (keepAudio && !writeWav(
             outputDirectory.getChildFile(
                 juce::String("delta-L") + juce::String(length) + ".wav"),
-            out))
+            shipped))
         passed = false;
 
     return passed;
@@ -957,32 +1181,48 @@ bool checkDryPath(const Shape &shape, int total)
         std::cout << "  ok   sidechain content changes the render (the old T3 inverts, as it must)\n";
     }
 
-    /* Criterion 3: at the dial's centre the shell's render is the wet stream and nothing else — no
-       gain, no delay, no filter from the law. The tolerance is item 6's, written down rather than
-       assumed; the harness reports whether the two came out bit-identical, which they do when every
-       coefficient lands on exactly 0 or 1. */
+    /* Criterion 3, re-pointed by M3 item 2 criterion C3: at the dial's centre the shell's render is
+       the wet stream through the two safety stages and nothing else — no gain, no delay, no
+       contribution from the law's dry weights. The reference is the pure-wet engine (no law, no
+       stages) with the stages applied by hand in decision C's order, so the leg still pins the
+       engine's gain against something that contains no mix stage at all; the duplication is C3's and
+       §5.1 is what keeps the copy honest. The tolerance is item 6's, written down rather than assumed. */
     const auto wetOnly = renderPureWet(shape, a, b, channels, sideChannels, blocks);
+    const auto centreWet = shapedBySafetyStages(wetOnly, 0.0f, true, true);
     double worst = 0.0;
     bool bitIdentical = true;
     for (std::size_t channel = 0; channel < withB.size(); ++channel)
         for (std::size_t i = 0; i < withB[channel].size(); ++i)
         {
             worst = std::max(worst, std::abs(static_cast<double>(withB[channel][i])
-                                             - static_cast<double>(wetOnly[channel][i])));
-            bitIdentical = bitIdentical && withB[channel][i] == wetOnly[channel][i];
+                                             - static_cast<double>(centreWet[channel][i])));
+            bitIdentical = bitIdentical && withB[channel][i] == centreWet[channel][i];
         }
 
     if (worst > kWetRecoveryTolerance)
     {
-        std::cout << "  FAIL dial at centre is not the pure-wet render: worst " << worst << "\n";
+        std::cout << "  FAIL dial at centre is not the wet stream through the stages: worst "
+                  << worst << "\n";
         passed = false;
     }
     else
     {
-        std::cout << "  ok   dial at centre == pure-wet render, worst " << worst
+        std::cout << "  ok   dial at centre == raw wet + DC block + soft clip, worst " << worst
                   << (bitIdentical ? " (bit-identical)" : "") << " (tol "
                   << kWetRecoveryTolerance << ")\n";
     }
+
+    /*  The same pair against the unfiltered wet path, for the record: the size of the difference the
+       shipped chain makes on program material rather than on a delta, which is the number that made
+       the leg above necessary. */
+    double worstStaged = 0.0;
+    for (std::size_t channel = 0; channel < withB.size(); ++channel)
+        for (std::size_t i = 0; i < withB[channel].size(); ++i)
+            worstStaged = std::max(worstStaged,
+                                   std::abs(static_cast<double>(withB[channel][i])
+                                            - static_cast<double>(wetOnly[channel][i])));
+    std::cout << "       shipped chain over the same wet path unfiltered: peak " << peakOf(wetOnly)
+              << " -> " << peakOf(withB) << ", max |difference| " << worstStaged << "\n";
 
     return passed;
 }
@@ -1041,38 +1281,74 @@ bool checkNumericHygiene(const Shape &shape, int total)
 }
 
 //==============================================================================
-// §5.7 — headroom, reported not gated. A correlated with B is where two unity streams meet.
-void reportHeadroom(const Shape &shape, int total)
+// §5.7 — headroom. M3 item 2 makes one line of this normative — nothing leaves the shipped chain
+// above the clipper's ceiling — and keeps the rest a report: the level curve is the blocked
+// normalizer's decision input (M3 item 1 §7), not this item's pass condition.
+bool reportHeadroom(const Shape &shape, int total)
 {
     const auto blocks = blocksSummingTo(total, 0);
     auto processor = makeProcessor();
     if (!configure(*processor, kStereoWithB, shape))
-        return;
+        return false;
 
     const int channels = processor->getChannelCountOfBus(true, 0);
     const int sideChannels = processor->getChannelCountOfBus(true, 1);
+    bool passed = true;
 
-    std::cout << "[5.7] headroom, reported not gated (M3's law is unity, so this is the curve the\n"
-                 "       blocked normalizer's target decision is taken from — see M3 item 1 §7)\n";
+    std::cout << "[5.7] headroom at the shipped chain's output. The level curve is reported for the\n"
+                 "       blocked normalizer's target decision (M3 item 1 §7); the post-clip peak\n"
+                 "       against the ceiling is normative (B7), the engagement and click figures not.\n";
+
+    /*  The four operating points the deferral chain has quoted since D-009, now in before/after
+       pairs: the same input through the same law with neither stage, then with both. "Engaged at
+       default settings" stops being an assertion this way — the percentage is the fraction of the
+       render the clipper had to shape, and the d2 ratio is 01 criterion 6's click metric against that
+       unshaped baseline, which is what a memoryless C1 stage is expected to lose rather than gain. */
     for (const float amplitude : {0.4f, 1.0f})
     {
         const auto a = noiseStream(channels, total, 111U, amplitude);
         const auto independent = noiseStream(sideChannels, total, 222U, amplitude);
         const auto correlated = a;
 
-        const auto freeRun = peakOf(render(*processor, a, &independent, blocks));
-        const auto locked = peakOf(render(*processor, a, &correlated, blocks));
-        std::cout << "       amplitude " << amplitude << ": independent peak " << freeRun
-                  << ", A == B peak " << locked << (locked > 1.0 ? "  (over full scale)" : "")
-                  << "\n";
+        for (const bool correlatedPair : {false, true})
+        {
+            const Stream &side = correlatedPair ? correlated : independent;
+            const char *pairing = correlatedPair ? "A == B" : "independent";
+
+            const auto out = render(*processor, a, &side, blocks);
+            const auto unshaped = renderReference(shape, a, side, channels, sideChannels, blocks,
+                                                  MixSetting{}, entangle::ChainVariant::RawWet);
+            const double peak = peakOf(out);
+            if (peak > dsp::SoftClipper::ceiling + 1e-6)
+            {
+                std::cout << "  FAIL B7: amplitude " << amplitude << ", " << pairing << ": post-clip\n"
+                          << "  FAIL B7: peak " << peak << " exceeds the ceiling "
+                          << dsp::SoftClipper::ceiling << "\n";
+                passed = false;
+            }
+
+            const double shapedClick = secondDifferencePeak(out);
+            const double baselineClick = secondDifferencePeak(unshaped);
+            std::cout << "       amplitude " << amplitude << ", " << pairing << ": peak "
+                      << peakOf(unshaped) << " with neither stage -> " << peak << " shipped"
+                      << (peak > 1.0 ? "  (over full scale)" : "") << "; "
+                      << (100.0 * fractionAboveKnee(out)) << " % of samples above the knee; d2 "
+                      << shapedClick << " vs " << baselineClick << " = "
+                      << (baselineClick > 0.0 ? shapedClick / baselineClick : 1.0) << "\n";
+        }
     }
 
     /* Peak versus dial position. The dial is the only gain the stage has under a unity law, so this
        is the sweep the normalizer's target gets chosen from — printed whether or not anything gates
        on it. The endpoints are the two bit-exact dry positions and 0 is pure convolution, which is
-       where a correlated pair can sum above full scale. */
-    std::cout << "       peak versus dial (criterion: no discontinuity across the travel; the level\n"
-                 "       itself is the blocked normalizer's question):\n";
+       where a correlated pair can sum above full scale. Each position carries three figures: the
+       post-clip peak, the fraction of the render above the knee, and 01 criterion 6's click metric
+       against the same input at the same static dial with neither stage. A memoryless C1 curve should
+       hold the first and lose on the third; a knee that had moved would show up as a jump in the
+       second, and a stage that clicked as it shaped would show up in the third. */
+    std::cout << "       peak / above-knee % / d2 over the unshaped render, versus dial (criterion:\n"
+                 "       no discontinuity across the travel; the level itself is the blocked\n"
+                 "       normalizer's question):\n";
     for (const float amplitude : {0.4f, 1.0f})
     {
         const auto a = noiseStream(channels, total, 111U, amplitude);
@@ -1086,15 +1362,32 @@ void reportHeadroom(const Shape &shape, int total)
             for (const float dial : {-1.0f, -0.75f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 0.75f, 1.0f})
             {
                 if (!setFloat(*processor, EntangleAudioProcessor::blendParameterId, dial))
-                    return;
-                std::cout << " " << dial << "=" << peakOf(render(*processor, a, &side, blocks));
+                    return false;
+                const auto out = render(*processor, a, &side, blocks);
+                const double peak = peakOf(out);
+                if (peak > dsp::SoftClipper::ceiling + 1e-6)
+                {
+                    std::cout << "\n  FAIL B7: amplitude " << amplitude
+                              << (correlatedPair ? " A == B" : " independent") << " at dial " << dial
+                              << " leaves the chain at " << peak << "\n";
+                    passed = false;
+                }
+                const auto unshaped = renderReference(shape, a, side, channels, sideChannels, blocks,
+                                                      MixSetting{dial},
+                                                      entangle::ChainVariant::RawWet);
+                const double shapedClick = secondDifferencePeak(out);
+                const double baselineClick = secondDifferencePeak(unshaped);
+                std::cout << " " << dial << "=" << peak << "/"
+                          << (100.0 * fractionAboveKnee(out)) << "%/"
+                          << (baselineClick > 0.0 ? shapedClick / baselineClick : 1.0);
             }
             std::cout << "\n";
         }
     }
 
     if (!setFloat(*processor, EntangleAudioProcessor::blendParameterId, 0.0f))
-        return;
+        return false;
+    return passed;
 }
 
 //==============================================================================
@@ -1113,18 +1406,6 @@ Stream renderAt(juce::AudioProcessor &processor, const Stream &a, const Stream *
         || !setBool(processor, EntangleAudioProcessor::bypassParameterId, bypassed))
         return {};
     return render(processor, a, b, blocks);
-}
-
-/** The wet stream scaled by one float gain: what the law produces at the dial's centre, where the
-    dry weights are exactly 0 and the coefficient arithmetic has nothing left to round. */
-Stream scaledBy(const Stream &reference, float gain)
-{
-    Stream scaled(reference.size(),
-                  std::vector<float>(reference.empty() ? 0 : reference[0].size(), 0.0f));
-    for (std::size_t channel = 0; channel < reference.size(); ++channel)
-        for (std::size_t i = 0; i < reference[channel].size(); ++i)
-            scaled[channel][i] = gain * reference[channel][i];
-    return scaled;
 }
 
 bool checkMixLaw()
@@ -1281,14 +1562,17 @@ bool checkMixLaw()
     const auto afterCycle = renderAt(*processor, a, &b, -0.4f, 0.0f, false, blocks);
     passed = expectIdentical(inEffect, afterCycle, "the dial survives a bypass cycle") && passed;
 
-    // Criterion 11: the output gain, against the wet stream scaled by the parameter's own figure.
+    /*  Criterion 11, re-pointed at the shipped chain: the output gain, against the same wet stream
+        DC-blocked, scaled by the parameter's own figure and clipped last. That is what the law
+        produces at the dial's centre, where the dry weights are exactly 0 and the coefficient
+        arithmetic has nothing left to round — and the order is the point: the clip bounds the *gained*
+        sum, so 6 dB and 12 dB are expected to sit on the ceiling rather than 6 and 12 dB above a
+        clipped signal. A reference scaled after the clip would pass the bound and miss the order. */
     const auto wet = renderPureWet(kDefault, a, b, channels, sideChannels, blocks);
-    for (const float decibels : {-60.0f, -12.0f, 0.0f, 6.0f, 12.0f})
+    for (const float gainDb : {-60.0f, -12.0f, 0.0f, 6.0f, 12.0f})
     {
-        const float linear =
-            static_cast<float>(std::pow(10.0, static_cast<double>(decibels) / 20.0));
-        const auto gained = renderAt(*processor, a, &b, 0.0f, decibels, false, blocks);
-        const auto want = scaledBy(wet, linear);
+        const auto gained = renderAt(*processor, a, &b, 0.0f, gainDb, false, blocks);
+        const auto want = shapedBySafetyStages(wet, gainDb, true, true);
         double worst = 0.0;
         bool bitIdentical = true;
         for (std::size_t channel = 0; channel < gained.size(); ++channel)
@@ -1300,7 +1584,7 @@ bool checkMixLaw()
             }
         const double relative = worst / std::max(peakOf(want), 1e-30);
         const juce::String label =
-            juce::String(decibels, 0) + " dB: measured gain matches 10^(dB/20)";
+            juce::String(gainDb, 0) + " dB: measured gain matches 10^(dB/20), then the clip";
         if (!(relative <= 1e-6))
         {
             std::cout << "  FAIL " << label << ": peak-relative deviation " << relative << "\n";
@@ -1547,6 +1831,78 @@ bool checkLifecycle(int total)
 
     return passed;
 }
+
+//==============================================================================
+// §5.11 — the DC the convolved path carries when both inputs are offset (criterion A10).
+/*  The transform primitive's own note is that the DC bin of the spectral product is (Σa)·(Σb): an
+    offset on either bus reaches the output multiplied through the other, which is the whole reason a
+    blocker exists. Measured here rather than left as that prose, at the default H and L, with the
+    stage out and in over the same rendered stream so the two readings cannot be two runs. */
+bool checkWetDcComponent()
+{
+    auto processor = makeProcessor();
+    if (!configure(*processor, kStereoWithB, kDefault))
+        return false;
+
+    const int channels = processor->getChannelCountOfBus(true, 0);
+    const int sideChannels = processor->getChannelCountOfBus(true, 1);
+    const int length = EntangleAudioProcessor::clampGrainLength(kDefault.chosen, kDefault.hop);
+    constexpr float kOffset = 0.01f; ///< the 1 % of full scale the criterion names
+
+    /*  Long enough for both readings to be steady, and keyed to the wet path rather than to the
+       corner. The DC term in the spectral product builds up over the transform's own history, which
+       is a few L on this shape, and the blocker then needs its documented bound from there. Sizing
+       the render from the bound alone was tried and is wrong: mutation 2 (corner ×100) shrinks the
+       bound to a few hundred samples, the wet baseline never reaches its plateau inside the render,
+       and the leg reports a ratio between two things that have not settled. The anchor-length renders
+       earlier in this file are shorter than either allowance, so their residue is still in flight —
+       which is why that reading is reported beside the settled one rather than passed over: how long
+       the decay takes is a property of the corner, and the corner is what this leg is evidence for. */
+    dsp::DcBlocker probe;
+    probe.prepare(kSampleRate, channels);
+    const int settling = probe.settlingSamples();
+    const int total = 4 * kDefault.chosen + settling + length;
+    const auto blocks = blocksSummingTo(total, 0);
+
+    const auto a = constantStream(channels, total, kOffset);
+    const auto b = constantStream(sideChannels, total, kOffset);
+
+    const auto raw = renderReference(kDefault, a, b, channels, sideChannels, blocks, MixSetting{},
+                                     entangle::ChainVariant::RawWet);
+    const auto shipped = render(*processor, a, &b, blocks);
+
+    /* The plateau reading, and the same reading taken where the anchor-length renders stop — that
+       one is mid-transient, and it is reported rather than skipped because how long the residue
+       takes is a property of the corner this leg is evidence for. */
+    const std::size_t window = static_cast<std::size_t>(length);
+    const int anchorTotal = 4 * kDefault.chosen + 2 * kDefault.hop;
+    Stream early = shipped;
+    for (auto &channel : early)
+        channel.resize(static_cast<std::size_t>(anchorTotal));
+
+    const double rawDc = dcComponentOf(raw, window);
+    const double shippedDc = dcComponentOf(shipped, window);
+    const double earlyDc = dcComponentOf(early, static_cast<std::size_t>(anchorTotal) / 4);
+
+    std::cout << "[5.11] DC on both buses, default H and L (criterion A10 — the reason the stage is\n"
+                 "       in the chain, measured instead of quoted from src/Fft/README.md)\n";
+    std::cout << "       " << (100.0 * kOffset) << " % offset on A and B: the wet path carries DC "
+              << rawDc << " with the blocker out and " << shippedDc << " once the stage has settled\n"
+              << "       (" << decibels(shippedDc / std::max(rawDc, 1e-300)) << " dB); " << earlyDc
+              << " = " << decibels(earlyDc / std::max(rawDc, 1e-300))
+              << " dB is still in flight where a\n";
+    std::cout << "       " << anchorTotal << "-sample anchor render ends. Documented settling bound "
+              << settling << " samples = " << (static_cast<double>(settling) / kSampleRate) << " s\n";
+
+    if (!(shippedDc <= 1e-6 * rawDc))
+    {
+        std::cout << "  FAIL A10: the settled wet path still carries " << shippedDc << " of DC,\n"
+                  << "  FAIL A10: above 1e-6 of the " << rawDc << " it carries without the stage\n";
+        return false;
+    }
+    std::cout << "  ok   A10: the wet path's DC is inside 1e-6 of itself once the stage has settled\n";
+    return true;
+}
 }
 
 int main()
@@ -1575,9 +1931,10 @@ int main()
     passed = checkDryPath(kTightest, tightestTotal) && passed;
     passed = checkDryPath(kDefault, defaultTotal) && passed;
     passed = checkNumericHygiene(kDefault, defaultTotal) && passed;
-    reportHeadroom(kDefault, defaultTotal);
+    passed = reportHeadroom(kDefault, defaultTotal) && passed;
     passed = checkLifecycle(defaultTotal) && passed;
     passed = checkMixLaw() && passed;
+    passed = checkWetDcComponent() && passed;
     passed = checkParameterStateCompatibility() && passed;
 
     std::cout << (passed ? "PASS" : "FAIL") << "\n";

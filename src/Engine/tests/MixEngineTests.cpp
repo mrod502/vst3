@@ -1,6 +1,8 @@
+#include <DcBlocker.hpp>
 #include <Engine.hpp>
 #include <HopScheduler.hpp>
 #include <MixEngine.hpp>
+#include <SoftClipper.hpp>
 
 #include <catch_amalgamated.hpp>
 
@@ -1195,4 +1197,166 @@ TEST_CASE("under HopScheduler both dry paths arrive at exactly the declared R")
                 CHECK(out[0][static_cast<std::size_t>(i)] == want);
             }
         }
+}
+
+/** A wet stream of one constant: the convolved path's DC component, which is the only thing the DC
+    blocker is allowed to remove and the thing neither dry bus may be filtered for. */
+class ConstantWetEngine final : public engine::Engine
+{
+public:
+    explicit ConstantWetEngine(float levelToUse) noexcept : level(levelToUse) {}
+
+    void prepare(const engine::EngineConfig& configToUse) override { config = configToUse; }
+    void reset() override {}
+
+    int latencySamples() const override { return config.latencySamples; }
+    int wetDelaySamples() const override { return config.grainLength; }
+
+    void processHop(const float* const*, const float* const*, float* const* out,
+                    int numChannels) override
+    {
+        for (int channel = 0; channel < numChannels; ++channel)
+            for (int i = 0; i < config.hop; ++i)
+                out[channel][i] = level;
+    }
+
+private:
+    engine::EngineConfig config;
+    float level;
+};
+
+TEST_CASE("the DC blocker empties the convolved stream and never reaches a dry bus")
+{
+    /* Decision C, first half. The dry buses carry DC here on purpose: if the blocker reached A, the
+       dial's -1 would stop being A and 01's bit-exact endpoint criteria would go red — which is the
+       §5 discriminator "put the DC blocker on the dry path instead". */
+    const int channels = 2;
+    const Streams a = constantStream(channels, kHop, 0.5f);
+    const Streams b = constantStream(channels, kHop, -0.25f);
+
+    {
+        /* The bound is only meaningful once the stage knows its rate, so it is read from a probe
+           prepared at the config's rate rather than from the injected stage, which MixEngine has not
+           prepared yet at the point the loop bound is needed. */
+        dsp::DcBlocker probe;
+        probe.prepare(kSampleRate, channels);
+        const int bound = probe.settlingSamples();
+        REQUIRE(bound > 0);
+        engine::MixEngine mix(std::make_unique<ConstantWetEngine>(1.0f),
+                              std::make_unique<dsp::DcBlocker>(), nullptr);
+        mix.setBlendTarget(0.0f);
+        mix.prepare(makeConfig(channels, 96));
+
+        Streams out = zerosLike(a);
+        const Pointers p = pointersFor(a, b, out);
+        for (int call = 0; call < bound / kHop + 1; ++call)
+            mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+
+        /* At the centre the law hands through the wet stream alone, so a constant wet input has to
+           vanish inside the bound the stage itself documents. */
+        INFO("settling bound " << bound << " samples");
+        CHECK(std::abs(out[0][kHop - 1]) <= 1e-6f);
+        CHECK(std::abs(out[1][kHop - 1]) <= 1e-6f);
+    }
+
+    for (const float dial : {-1.0f, 1.0f})
+    {
+        engine::MixEngine mix(std::make_unique<ConstantWetEngine>(1.0f),
+                              std::make_unique<dsp::DcBlocker>(),
+                              std::make_unique<dsp::SoftClipper>());
+        mix.setBlendTarget(dial);
+        mix.prepare(makeConfig(channels, 96));
+
+        Streams out = zerosLike(a);
+        const Pointers p = pointersFor(a, b, out);
+        mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+
+        const Streams& want = dial < 0.0f ? a : b;
+        for (int channel = 0; channel < channels; ++channel)
+            for (int i = 0; i < kHop; ++i)
+            {
+                INFO("dial=" << dial << " ch=" << channel << " i=" << i);
+                CHECK(out[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]
+                      == want[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]);
+            }
+    }
+}
+
+TEST_CASE("the clipper bounds the summed output, and reaches it through the gain")
+{
+    /* Decision C, second half: the gain is applied first and the clip last, so what the ceiling
+        bounds is the gained sum — driving the output gain harder is limited rather than unbounded.
+        The expectation is the law's own coefficient times the wet sample, put through the stage's
+        transfer function, so this pins the order and not just the bound. */
+    const int channels = 1;
+    const Streams a = constantStream(channels, kHop, 0.0f);
+    const Streams b = constantStream(channels, kHop, 0.0f);
+
+    for (const float decibels : {0.0f, 6.0f, 12.0f})
+    {
+        engine::MixEngine mix(std::make_unique<ConstantWetEngine>(1.0f), nullptr,
+                              std::make_unique<dsp::SoftClipper>());
+        mix.setBlendTarget(0.0f);
+        mix.setOutputGainTarget(decibels);
+        mix.prepare(makeConfig(channels, 96));
+
+        Streams out = zerosLike(a);
+        const Pointers p = pointersFor(a, b, out);
+        mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+
+        const float linear = static_cast<float>(std::pow(10.0, static_cast<double>(decibels) / 20.0));
+        const float want = dsp::SoftClipper::shape(linear);
+        for (int i = 0; i < kHop; ++i)
+        {
+            INFO(decibels << " dB: want " << want << " (pre-clip " << linear << ")");
+            CHECK(out[0][static_cast<std::size_t>(i)] == want);
+            CHECK(std::abs(out[0][static_cast<std::size_t>(i)]) <= dsp::SoftClipper::ceiling);
+        }
+    }
+
+    /* And a stage installed above material that never reaches the knee changes nothing at all, which
+       is what lets 01's endpoint criteria stay bit-exact with the shipped chain. */
+    engine::MixEngine quiet(std::make_unique<ConstantWetEngine>(0.4f), nullptr,
+                            std::make_unique<dsp::SoftClipper>());
+    quiet.setBlendTarget(0.0f);
+    quiet.prepare(makeConfig(channels, 96));
+    Streams out = zerosLike(a);
+    const Pointers p = pointersFor(a, b, out);
+    quiet.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+    for (int i = 0; i < kHop; ++i)
+        CHECK(out[0][static_cast<std::size_t>(i)] == 0.4f);
+}
+
+TEST_CASE("the safety stages move neither delay figure and allocate nothing on the hop path")
+{
+    /* Criterion B6's engine-level half: neither stage is a delay line, so R and W are the inner
+       engine's own declarations, and criterion B8's: the shipped chain's hop path still allocates
+       nothing with both of them installed. */
+    auto stub = std::make_unique<StubEngine>();
+    StubEngine* observed = stub.get();
+    observed->declaredLatency = 96;
+    observed->wetDelay = 8 * kHop;
+
+    engine::MixEngine mix(std::move(stub), std::make_unique<dsp::DcBlocker>(),
+                          std::make_unique<dsp::SoftClipper>());
+    mix.prepare(makeConfig(2, 96));
+
+    CHECK(mix.latencySamples() == 96);
+    CHECK(mix.wetDelaySamples() == 8 * kHop);
+
+    const int channels = 2;
+    const Streams a = makeInputs(channels, kHop, 0);
+    const Streams b = makeInputs(channels, kHop, 5000);
+    Streams out = zerosLike(a);
+    const Pointers p = pointersFor(a, b, out);
+
+    long allocations = -1;
+    {
+        AllocationWatch watch;
+        for (int call = 0; call < 64; ++call)
+            mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+        allocations = allocationCount;
+    }
+    CHECK(allocations == 0);
+    CHECK(observed->hopCalls == 64);
 }

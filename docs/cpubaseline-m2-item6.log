@@ -1,0 +1,144 @@
+transform: juce::dsp::FFT, measured forward gain=1.000 inverse gain=1.000
+engine: grain::GrainConvolutionEngine, R = H, 3000 hops per row
+
+L= 1024 H= 128 ch=1 hostBlock= 32  callbacks: hop n=745   mean=   11.77 p99=   28.83 max=   37.75 us | idle n=2235  mean=  0.05 max=  0.29 us
+                 processHop alone: mean=    9.74 p99=   17.75 max=   68.46 us  ->  0.37% of one core at 48000 Hz
+L= 1024 H= 128 ch=1 hostBlock= 64  callbacks: hop n=1495  mean=    9.35 p99=   17.96 max=   24.46 us | idle n=1495  mean=  0.34 max= 11.58 us
+                 processHop alone: mean=    8.01 p99=   12.67 max=   25.33 us  ->  0.30% of one core at 48000 Hz
+L= 1024 H= 128 ch=2 hostBlock= 32  callbacks: hop n=745   mean=   15.98 p99=   23.50 max=   33.71 us | idle n=2235  mean=  0.05 max=  0.17 us
+                 processHop alone: mean=   16.41 p99=   24.50 max=   41.42 us  ->  0.62% of one core at 48000 Hz
+L= 1024 H= 128 ch=2 hostBlock= 64  callbacks: hop n=1495  mean=   16.36 p99=   22.42 max=   35.29 us | idle n=1495  mean=  0.11 max=  0.46 us
+                 processHop alone: mean=   16.35 p99=   25.04 max=   46.67 us  ->  0.61% of one core at 48000 Hz
+                 stereo/mono for one hop: 1.69x (2.00x would justify the 2x-mono extrapolation)
+
+L= 2048 H= 128 ch=1 hostBlock= 32  callbacks: hop n=745   mean=   17.58 p99=   33.17 max=   85.83 us | idle n=2235  mean=  0.05 max=  5.17 us
+                 processHop alone: mean=   17.54 p99=   27.21 max=   41.46 us  ->  0.66% of one core at 48000 Hz
+L= 2048 H= 128 ch=1 hostBlock= 64  callbacks: hop n=1495  mean=   17.75 p99=   29.83 max=   46.88 us | idle n=1495  mean=  0.09 max=  7.62 us
+                 processHop alone: mean=   17.46 p99=   29.75 max=   40.58 us  ->  0.65% of one core at 48000 Hz
+L= 2048 H= 128 ch=2 hostBlock= 32  callbacks: hop n=745   mean=   34.96 p99=   48.25 max=   56.79 us | idle n=2235  mean=  0.07 max=  4.58 us
+                 processHop alone: mean=   36.07 p99=   54.62 max=   68.00 us  ->  1.35% of one core at 48000 Hz
+L= 2048 H= 128 ch=2 hostBlock= 64  callbacks: hop n=1495  mean=   35.22 p99=   48.71 max=   59.83 us | idle n=1495  mean=  0.13 max=  0.50 us
+                 processHop alone: mean=   35.11 p99=   48.88 max=   64.88 us  ->  1.32% of one core at 48000 Hz
+                 stereo/mono for one hop: 2.06x (2.00x would justify the 2x-mono extrapolation)
+
+L= 4096 H= 128 ch=1 hostBlock= 32  callbacks: hop n=745   mean=   35.86 p99=   50.58 max=   55.50 us | idle n=2235  mean=  0.05 max=  4.67 us
+                 processHop alone: mean=   35.79 p99=   50.54 max=   59.92 us  ->  1.34% of one core at 48000 Hz
+L= 4096 H= 128 ch=1 hostBlock= 64  callbacks: hop n=1495  mean=   36.05 p99=   52.50 max=  119.00 us | idle n=1495  mean=  0.10 max= 10.17 us
+                 processHop alone: mean=   35.81 p99=   48.96 max=   67.00 us  ->  1.34% of one core at 48000 Hz
+L= 4096 H= 128 ch=2 hostBlock= 32  callbacks: hop n=745   mean=   71.71 p99=   90.25 max=  102.92 us | idle n=2235  mean=  0.08 max=  4.96 us
+                 processHop alone: mean=   71.77 p99=   89.96 max=  121.58 us  ->  2.69% of one core at 48000 Hz
+L= 4096 H= 128 ch=2 hostBlock= 64  callbacks: hop n=1495  mean=   71.68 p99=   91.92 max=  120.04 us | idle n=1495  mean=  0.17 max=  0.71 us
+                 processHop alone: mean=   71.40 p99=   88.46 max=  154.58 us  ->  2.68% of one core at 48000 Hz
+                 stereo/mono for one hop: 2.01x (2.00x would justify the 2x-mono extrapolation)
+
+L= 8192 H= 128 ch=1 hostBlock= 32  callbacks: hop n=745   mean=   75.64 p99=   99.67 max=  130.83 us | idle n=2235  mean=  0.06 max=  1.17 us
+                 processHop alone: mean=   76.53 p99=  100.21 max=  189.75 us  ->  2.87% of one core at 48000 Hz
+L= 8192 H= 128 ch=1 hostBlock= 64  callbacks: hop n=1495  mean=   75.94 p99=   95.96 max=  112.42 us | idle n=1495  mean=  0.11 max=  0.50 us
+                 processHop alone: mean=   75.56 p99=   93.17 max=  119.96 us  ->  2.83% of one core at 48000 Hz
+L= 8192 H= 128 ch=2 hostBlock= 32  callbacks: hop n=745   mean=  151.65 p99=  172.50 max=  211.62 us | idle n=2235  mean=  0.09 max=  1.08 us
+                 processHop alone: mean=  150.98 p99=  181.92 max=  356.33 us  ->  5.66% of one core at 48000 Hz
+L= 8192 H= 128 ch=2 hostBlock= 64  callbacks: hop n=1495  mean=  149.64 p99=  184.67 max=  217.71 us | idle n=1495  mean=  0.23 max=  0.88 us
+                 processHop alone: mean=  148.86 p99=  181.33 max=  205.04 us  ->  5.58% of one core at 48000 Hz
+                 stereo/mono for one hop: 1.97x (2.00x would justify the 2x-mono extrapolation)
+
+L=16384 H= 128 ch=1 hostBlock= 32  callbacks: hop n=745   mean=  191.62 p99=  221.33 max=  257.04 us | idle n=2235  mean=  0.05 max=  4.50 us
+                 processHop alone: mean=  192.31 p99=  226.67 max=  260.12 us  ->  7.21% of one core at 48000 Hz
+L=16384 H= 128 ch=1 hostBlock= 64  callbacks: hop n=1495  mean=  192.23 p99=  224.29 max=  243.46 us | idle n=1495  mean=  0.14 max=  0.50 us
+                 processHop alone: mean=  193.28 p99=  227.17 max=  250.79 us  ->  7.25% of one core at 48000 Hz
+L=16384 H= 128 ch=2 hostBlock= 32  callbacks: hop n=745   mean=  385.35 p99=  438.75 max=  463.46 us | idle n=2235  mean=  0.10 max= 10.04 us
+                 processHop alone: mean=  386.98 p99=  451.33 max=  478.92 us  -> 14.51% of one core at 48000 Hz
+L=16384 H= 128 ch=2 hostBlock= 64  callbacks: hop n=1495  mean=  387.83 p99=  452.21 max=  538.46 us | idle n=1495  mean=  0.27 max= 30.75 us
+                 processHop alone: mean=  387.34 p99=  455.17 max=  577.88 us  -> 14.53% of one core at 48000 Hz
+                 stereo/mono for one hop: 2.01x (2.00x would justify the 2x-mono extrapolation)
+
+L=32768 H= 128 ch=1 hostBlock= 32  callbacks: hop n=745   mean=  418.95 p99=  482.25 max=  511.96 us | idle n=2235  mean=  0.07 max=  4.75 us
+                 processHop alone: mean=  421.08 p99=  487.79 max=  531.04 us  -> 15.79% of one core at 48000 Hz
+L=32768 H= 128 ch=1 hostBlock= 64  callbacks: hop n=1495  mean=  407.04 p99=  475.62 max= 1068.42 us | idle n=1495  mean=  0.20 max=  3.04 us
+                 processHop alone: mean=  408.04 p99=  469.21 max=  508.17 us  -> 15.30% of one core at 48000 Hz
+L=32768 H= 128 ch=2 hostBlock= 32  callbacks: hop n=745   mean=  816.25 p99=  926.33 max=  949.08 us | idle n=2235  mean=  0.11 max=  1.12 us
+                 processHop alone: mean=  817.18 p99=  925.62 max=  951.67 us  -> 30.64% of one core at 48000 Hz
+L=32768 H= 128 ch=2 hostBlock= 64  callbacks: hop n=1495  mean=  817.19 p99=  934.96 max=  968.54 us | idle n=1495  mean=  0.25 max=  0.88 us
+                 processHop alone: mean=  818.09 p99=  933.67 max= 1034.96 us  -> 30.68% of one core at 48000 Hz
+                 stereo/mono for one hop: 1.94x (2.00x would justify the 2x-mono extrapolation)
+
+L=65536 H= 128 ch=1 hostBlock= 32  callbacks: hop n=745   mean= 1092.54 p99= 1244.96 max= 2149.75 us | idle n=2235  mean=  0.09 max=  3.42 us
+                 processHop alone: mean= 1091.00 p99= 1231.21 max= 1290.71 us  -> 40.91% of one core at 48000 Hz
+L=65536 H= 128 ch=1 hostBlock= 64  callbacks: hop n=1495  mean= 1072.54 p99= 1203.46 max= 1279.62 us | idle n=1495  mean=  0.21 max=  0.58 us
+                 processHop alone: mean= 1076.62 p99= 1216.50 max= 1331.38 us  -> 40.37% of one core at 48000 Hz
+L=65536 H= 128 ch=2 hostBlock= 32  callbacks: hop n=745   mean= 2151.25 p99= 2407.50 max= 2462.46 us | idle n=2235  mean=  0.12 max=  1.00 us
+                 processHop alone: mean= 2153.49 p99= 2389.25 max= 2660.04 us  -> 80.76% of one core at 48000 Hz
+L=65536 H= 128 ch=2 hostBlock= 64  callbacks: hop n=1495  mean= 2115.98 p99= 2328.58 max= 2497.42 us | idle n=1495  mean=  0.27 max= 11.46 us
+                 processHop alone: mean= 2117.07 p99= 2330.75 max= 3215.42 us  -> 79.39% of one core at 48000 Hz
+                 stereo/mono for one hop: 1.97x (2.00x would justify the 2x-mono extrapolation)
+
+L= 1024 H= 512 ch=1 hostBlock= 32  callbacks: hop n=182   mean=    8.48 p99=   10.42 max=   16.96 us | idle n=2738  mean=  0.04 max=  0.17 us
+                 processHop alone: mean=    8.10 p99=   14.62 max=   21.42 us  ->  0.08% of one core at 48000 Hz
+L= 1024 H= 512 ch=1 hostBlock= 64  callbacks: hop n=370   mean=    8.75 p99=   19.33 max=   21.46 us | idle n=2590  mean=  0.05 max=  4.71 us
+                 processHop alone: mean=    8.06 p99=   13.29 max=   22.21 us  ->  0.08% of one core at 48000 Hz
+L= 1024 H= 512 ch=2 hostBlock= 32  callbacks: hop n=182   mean=   16.71 p99=   20.88 max=   21.50 us | idle n=2738  mean=  0.06 max=  0.38 us
+                 processHop alone: mean=   16.24 p99=   25.33 max=   33.67 us  ->  0.15% of one core at 48000 Hz
+L= 1024 H= 512 ch=2 hostBlock= 64  callbacks: hop n=370   mean=   16.81 p99=   23.58 max=   35.21 us | idle n=2590  mean=  0.08 max=  8.46 us
+                 processHop alone: mean=   16.40 p99=   26.21 max=   38.25 us  ->  0.15% of one core at 48000 Hz
+                 stereo/mono for one hop: 2.01x (2.00x would justify the 2x-mono extrapolation)
+
+L= 2048 H= 512 ch=1 hostBlock= 32  callbacks: hop n=182   mean=   17.16 p99=   22.42 max=   32.50 us | idle n=2738  mean=  0.04 max=  0.33 us
+                 processHop alone: mean=   17.21 p99=   26.38 max=   36.04 us  ->  0.16% of one core at 48000 Hz
+L= 2048 H= 512 ch=1 hostBlock= 64  callbacks: hop n=370   mean=   17.69 p99=   29.88 max=   30.92 us | idle n=2590  mean=  0.05 max=  4.58 us
+                 processHop alone: mean=   17.16 p99=   25.58 max=   39.46 us  ->  0.16% of one core at 48000 Hz
+L= 2048 H= 512 ch=2 hostBlock= 32  callbacks: hop n=182   mean=   34.39 p99=   39.38 max=   42.21 us | idle n=2738  mean=  0.07 max=  0.75 us
+                 processHop alone: mean=   34.46 p99=   47.25 max=   67.96 us  ->  0.32% of one core at 48000 Hz
+L= 2048 H= 512 ch=2 hostBlock= 64  callbacks: hop n=370   mean=   35.07 p99=   48.79 max=   54.04 us | idle n=2590  mean=  0.09 max=  6.33 us
+                 processHop alone: mean=   34.64 p99=   46.96 max=   64.08 us  ->  0.32% of one core at 48000 Hz
+                 stereo/mono for one hop: 2.00x (2.00x would justify the 2x-mono extrapolation)
+
+L= 4096 H= 512 ch=1 hostBlock= 32  callbacks: hop n=182   mean=   35.26 p99=   45.88 max=   54.92 us | idle n=2738  mean=  0.04 max=  5.33 us
+                 processHop alone: mean=   35.04 p99=   46.17 max=   90.79 us  ->  0.33% of one core at 48000 Hz
+L= 4096 H= 512 ch=1 hostBlock= 64  callbacks: hop n=370   mean=   35.60 p99=   50.33 max=   61.62 us | idle n=2590  mean=  0.05 max=  4.75 us
+                 processHop alone: mean=   35.38 p99=   48.21 max=   95.50 us  ->  0.33% of one core at 48000 Hz
+L= 4096 H= 512 ch=2 hostBlock= 32  callbacks: hop n=182   mean=   70.62 p99=   82.50 max=   83.12 us | idle n=2738  mean=  0.06 max=  0.71 us
+                 processHop alone: mean=   70.10 p99=   87.54 max=   99.29 us  ->  0.66% of one core at 48000 Hz
+L= 4096 H= 512 ch=2 hostBlock= 64  callbacks: hop n=370   mean=   70.37 p99=   87.92 max=   91.58 us | idle n=2590  mean=  0.09 max=  0.83 us
+                 processHop alone: mean=   70.57 p99=   87.54 max=  140.25 us  ->  0.66% of one core at 48000 Hz
+                 stereo/mono for one hop: 2.00x (2.00x would justify the 2x-mono extrapolation)
+
+L= 8192 H= 512 ch=1 hostBlock= 32  callbacks: hop n=182   mean=   74.44 p99=   93.00 max=   97.88 us | idle n=2738  mean=  0.04 max=  5.04 us
+                 processHop alone: mean=   74.33 p99=   92.79 max=  103.67 us  ->  0.70% of one core at 48000 Hz
+L= 8192 H= 512 ch=1 hostBlock= 64  callbacks: hop n=370   mean=   74.31 p99=   94.42 max=   98.88 us | idle n=2590  mean=  0.05 max=  0.42 us
+                 processHop alone: mean=   74.45 p99=   94.00 max=  107.58 us  ->  0.70% of one core at 48000 Hz
+L= 8192 H= 512 ch=2 hostBlock= 32  callbacks: hop n=182   mean=  146.00 p99=  156.17 max=  163.50 us | idle n=2738  mean=  0.06 max=  4.29 us
+                 processHop alone: mean=  149.23 p99=  180.12 max=  217.42 us  ->  1.40% of one core at 48000 Hz
+L= 8192 H= 512 ch=2 hostBlock= 64  callbacks: hop n=370   mean=  149.05 p99=  179.58 max=  198.83 us | idle n=2590  mean=  0.10 max=  4.50 us
+                 processHop alone: mean=  149.37 p99=  179.42 max=  237.12 us  ->  1.40% of one core at 48000 Hz
+                 stereo/mono for one hop: 2.01x (2.00x would justify the 2x-mono extrapolation)
+
+L=16384 H= 512 ch=1 hostBlock= 32  callbacks: hop n=182   mean=  195.64 p99=  235.75 max=  239.92 us | idle n=2738  mean=  0.05 max=  0.42 us
+                 processHop alone: mean=  197.49 p99=  241.08 max=  319.17 us  ->  1.85% of one core at 48000 Hz
+L=16384 H= 512 ch=1 hostBlock= 64  callbacks: hop n=370   mean=  194.42 p99=  233.92 max=  241.92 us | idle n=2590  mean=  0.06 max=  0.42 us
+                 processHop alone: mean=  196.58 p99=  235.75 max=  450.33 us  ->  1.84% of one core at 48000 Hz
+L=16384 H= 512 ch=2 hostBlock= 32  callbacks: hop n=182   mean=  391.52 p99=  442.17 max=  477.08 us | idle n=2738  mean=  0.07 max=  0.42 us
+                 processHop alone: mean=  390.01 p99=  459.38 max=  518.25 us  ->  3.66% of one core at 48000 Hz
+L=16384 H= 512 ch=2 hostBlock= 64  callbacks: hop n=370   mean=  389.80 p99=  443.71 max=  475.33 us | idle n=2590  mean=  0.12 max=  1.17 us
+                 processHop alone: mean=  390.81 p99=  453.96 max=  491.54 us  ->  3.66% of one core at 48000 Hz
+                 stereo/mono for one hop: 1.97x (2.00x would justify the 2x-mono extrapolation)
+
+L=32768 H= 512 ch=1 hostBlock= 32  callbacks: hop n=182   mean=  406.44 p99=  465.71 max=  474.83 us | idle n=2738  mean=  0.05 max= 11.46 us
+                 processHop alone: mean=  404.87 p99=  471.92 max=  552.46 us  ->  3.80% of one core at 48000 Hz
+L=32768 H= 512 ch=1 hostBlock= 64  callbacks: hop n=370   mean=  405.26 p99=  476.75 max=  513.38 us | idle n=2590  mean=  0.09 max=  0.58 us
+                 processHop alone: mean=  404.40 p99=  469.33 max=  503.46 us  ->  3.79% of one core at 48000 Hz
+L=32768 H= 512 ch=2 hostBlock= 32  callbacks: hop n=182   mean=  825.78 p99=  920.21 max=  952.42 us | idle n=2738  mean=  0.08 max=  0.58 us
+                 processHop alone: mean=  827.35 p99=  939.50 max=  986.88 us  ->  7.76% of one core at 48000 Hz
+L=32768 H= 512 ch=2 hostBlock= 64  callbacks: hop n=370   mean=  822.88 p99=  947.12 max=  955.96 us | idle n=2590  mean=  0.12 max=  4.17 us
+                 processHop alone: mean=  830.33 p99=  941.67 max= 2468.75 us  ->  7.78% of one core at 48000 Hz
+                 stereo/mono for one hop: 2.04x (2.00x would justify the 2x-mono extrapolation)
+
+L=65536 H= 512 ch=1 hostBlock= 32  callbacks: hop n=182   mean= 1079.55 p99= 1201.50 max= 1236.33 us | idle n=2738  mean=  0.05 max=  9.50 us
+                 processHop alone: mean= 1084.27 p99= 1216.54 max= 1298.71 us  -> 10.17% of one core at 48000 Hz
+L=65536 H= 512 ch=1 hostBlock= 64  callbacks: hop n=370   mean= 1080.94 p99= 1213.67 max= 1240.08 us | idle n=2590  mean=  0.09 max=  0.50 us
+                 processHop alone: mean= 1083.80 p99= 1204.33 max= 1255.21 us  -> 10.16% of one core at 48000 Hz
+L=65536 H= 512 ch=2 hostBlock= 32  callbacks: hop n=182   mean= 2149.03 p99= 2348.83 max= 2361.25 us | idle n=2738  mean=  0.07 max=  0.75 us
+                 processHop alone: mean= 2156.69 p99= 2350.67 max= 2788.46 us  -> 20.22% of one core at 48000 Hz
+L=65536 H= 512 ch=2 hostBlock= 64  callbacks: hop n=370   mean= 2158.07 p99= 2324.50 max= 2412.54 us | idle n=2590  mean=  0.13 max=  5.62 us
+                 processHop alone: mean= 2157.69 p99= 2362.08 max= 3352.96 us  -> 20.23% of one core at 48000 Hz
+                 stereo/mono for one hop: 1.99x (2.00x would justify the 2x-mono extrapolation)
+
+EXIT=0

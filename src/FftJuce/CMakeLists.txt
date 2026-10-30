@@ -26,6 +26,11 @@ target_compile_definitions(FftJuce PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0)
 
+# The attached module closure is compiled into libFftJuce.a itself — ar t on the built archive
+# shows juce_core, juce_audio_formats and the FLAC objects sitting in it alongside JuceFft.cpp —
+# which is why the PIC rule in the root CMakeLists.txt matters here more than anywhere: this is the
+# archive whose non-PIC objects first broke the plugin's shared link, on FLAC symbols no one reading
+# the diff would think to look at (F-009).
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()

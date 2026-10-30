@@ -10,33 +10,58 @@ juce::AudioProcessorValueTreeState::ParameterLayout EntangleAudioProcessor::make
     for (const int hop : hopValues)
         hopNames.add(juce::String(hop));
 
+    juce::StringArray grainLengthNames;
+    for (const int length : grainLengthValues)
+        grainLengthNames.add(juce::String(length));
+
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     layout.add(
         std::make_unique<juce::AudioParameterFloat>(
             juce::ParameterID{blendParameterId, 1}, "Blend",
-            juce::NormalisableRange<float>{-1.0f, 1.0f, 0.01f}, 0.0f),
+            juce::NormalisableRange<float>{-1.0f, 1.0f, blendStep}, 0.0f),
         std::make_unique<juce::AudioParameterChoice>(
             juce::ParameterID{hopParameterId, 1}, "Hop size", hopNames, defaultHopIndex,
-            juce::AudioParameterChoiceAttributes().withAutomatable(false)));
+            juce::AudioParameterChoiceAttributes().withAutomatable(false)),
+        std::make_unique<juce::AudioParameterChoice>(
+            juce::ParameterID{grainLengthParameterId, 1}, "Grain length", grainLengthNames,
+            defaultGrainLengthIndex,
+            juce::AudioParameterChoiceAttributes().withAutomatable(false)),
+        /* Appended, never inserted. The two choice parameters above are indexed by position in a
+           saved preset, so the order they are declared in is part of the file format; the float and
+           bool parameters added here are looked up by id, so they can arrive at the end without
+           moving anything. */
+        std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{outputGainParameterId, 1}, "Output gain",
+            juce::NormalisableRange<float>{outputGainMinDb, outputGainMaxDb, outputGainStepDb},
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel("dB")),
+        std::make_unique<juce::AudioParameterBool>(
+            juce::ParameterID{bypassParameterId, 1}, "Bypass", false));
     return layout;
 }
 
+/* The mode 1 engine under the M3 mix law: with no sidechain bus B is silence (D-002), so the law
+   pins the effective dial to pure A there (D-011) rather than handing back the silence a pure-wet
+   shell would. The chain itself is built by the shared builder OfflineRender's §5.1 comparator
+   uses too, so the harness can never drift from what ships. */
 EntangleAudioProcessor::EntangleAudioProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
                          .withInput("Sidechain", juce::AudioChannelSet::stereo(), false)
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
       apvts(*this, nullptr, "PARAMETERS", makeLayout()),
-      engine(std::make_unique<engine::PassthroughEngine>()),
+      engine(entangle::makeShippedChain(transformFactory)),
       scheduler(*engine)
 {
     apvts.addParameterListener(hopParameterId, this);
+    apvts.addParameterListener(grainLengthParameterId, this);
     buf.resize(1 << 16);
 }
 
 EntangleAudioProcessor::~EntangleAudioProcessor()
 {
     apvts.removeParameterListener(hopParameterId, this);
+    apvts.removeParameterListener(grainLengthParameterId, this);
 }
 
 const juce::String EntangleAudioProcessor::getName() const
@@ -61,6 +86,9 @@ bool EntangleAudioProcessor::isMidiEffect() const
 
 double EntangleAudioProcessor::getTailLengthSeconds() const
 {
+    // The wet response to an impulse occupies [n0+L, n0+2L-1], so the tail past the declared R is
+    // (2L-1)-R: measured through processBlock at 0.34 s for the 8192 default and 2.72 s at the
+    // 65536 cap (OfflineRender §5.3). Item 6's plan keeps the declaration at zero on that number.
     return 0.0;
 }
 
@@ -97,8 +125,8 @@ bool EntangleAudioProcessor::isBusesLayoutSupported(const BusesLayout &layouts) 
     const auto mainIn = layouts.getMainInputChannelSet();
     const auto mainOut = layouts.getMainOutputChannelSet();
 
-    // The passthrough hands A back on the channel set it arrived on; M4 relaxes this once
-    // the engine owns the channel map.
+    // The engine emits one output channel per input channel and the dry add reads the same index
+    // on both buses; M4 relaxes this once the engine owns the channel map.
     if (mainIn != mainOut)
         return false;
 
@@ -125,6 +153,27 @@ int EntangleAudioProcessor::currentHopIndex() const
     return juce::jlimit(0, static_cast<int>(hopValues.size()) - 1, static_cast<int>(raw->load()));
 }
 
+int EntangleAudioProcessor::currentGrainLengthIndex() const
+{
+    const auto *raw = apvts.getRawParameterValue(grainLengthParameterId);
+    if (raw == nullptr)
+        return defaultGrainLengthIndex;
+
+    return juce::jlimit(0, static_cast<int>(grainLengthValues.size()) - 1,
+                        static_cast<int>(raw->load()));
+}
+
+int EntangleAudioProcessor::requestedGrainLengthSamples() const
+{
+    return grainLengthValues[static_cast<std::size_t>(currentGrainLengthIndex())];
+}
+
+int EntangleAudioProcessor::grainLengthSamples() const
+{
+    return clampGrainLength(requestedGrainLengthSamples(),
+                            hopValues[static_cast<std::size_t>(currentHopIndex())]);
+}
+
 void EntangleAudioProcessor::configureRings(double sampleRateToUse, int samplesPerBlock)
 {
     const int channels = std::min(getChannelCountOfBus(true, 0), getChannelCountOfBus(false, 0));
@@ -137,19 +186,34 @@ void EntangleAudioProcessor::configureRings(double sampleRateToUse, int samplesP
     if (channels <= 0)
         return;
 
-    engineConfig.sampleRate = sampleRateToUse;
-    engineConfig.hop = hopValues[static_cast<std::size_t>(currentHopIndex())];
-    engineConfig.maxChannels = channels;
-    engineConfig.latencySamples = engineConfig.hop; ///< M1 placeholder policy (D-004)
+    entangle::ChainConfig chain;
+    chain.sampleRate = sampleRateToUse;
+    chain.hop = hopValues[static_cast<std::size_t>(currentHopIndex())];
+    chain.grainLength = clampGrainLength(requestedGrainLengthSamples(), chain.hop);
+    chain.channels = channels;
+    chain.sidechainChannels = sidechainIsLive ? getChannelCountOfBus(true, 1) : 0;
+    chain.maxHostBlock = std::max(samplesPerBlock, maxHostBlockSamples);
 
-    engine::SchedulerConfig schedulerConfig;
-    schedulerConfig.engine = engineConfig;
-    schedulerConfig.channels = channels;
-    schedulerConfig.sidechainChannels = sidechainIsLive ? getChannelCountOfBus(true, 1) : 0;
-    schedulerConfig.maxHostBlock = std::max(samplesPerBlock, maxHostBlockSamples);
+    const engine::SchedulerConfig schedulerConfig = entangle::makeSchedulerConfig(chain);
+    engineConfig = schedulerConfig.engine;
+
+    pushParameterTargets();
 
     scheduler.prepare(schedulerConfig);
-    setLatencySamples(engineConfig.latencySamples);
+    setLatencySamples(schedulerConfig.engine.latencySamples);
+}
+
+float EntangleAudioProcessor::rawParameter(const juce::String &parameterId, float fallback) const noexcept
+{
+    const auto *raw = apvts.getRawParameterValue(parameterId);
+    return raw != nullptr ? raw->load() : fallback;
+}
+
+void EntangleAudioProcessor::pushParameterTargets()
+{
+    engine->setBlendTarget(effectiveBlendPosition());
+    engine->setOutputGainTarget(rawParameter(outputGainParameterId, 0.0f));
+    engine->setBypassTarget(rawParameter(bypassParameterId, 0.0f) >= 0.5f);
 }
 
 void EntangleAudioProcessor::prepareToPlay(double sampleRateToUse, int samplesPerBlock)
@@ -173,10 +237,10 @@ void EntangleAudioProcessor::parameterChanged(const juce::String &parameterID, f
 {
     juce::ignoreUnused(newValue);
 
-    // A hop change re-prepares every ring. AsyncUpdater moves that work to the message
-    // thread even if a host poked the parameter from elsewhere, which is what makes the
+    // A hop or grain-length change re-prepares every ring. AsyncUpdater moves that work to the
+    // message thread even if a host poked the parameter from elsewhere, which is what makes the
     // suspend round-trip in reconfigureSafely safe to make.
-    if (parameterID == hopParameterId)
+    if (parameterID == hopParameterId || parameterID == grainLengthParameterId)
         triggerAsyncUpdate();
 }
 
@@ -193,9 +257,10 @@ void EntangleAudioProcessor::releaseResources()
 
 void EntangleAudioProcessor::reset()
 {
-    // Restores the output ring's latency pre-fill. Without it the tail of the previous take
-    // plays back over the new one, and the latency reported to the host stops matching the
-    // delay the host can actually measure.
+    /* scheduler.reset() restores the output ring's latency pre-fill, without which the previous
+       take's tail plays over the new one. Targets go in first because that call also snaps the mix
+       ramps onto the targets they hold — after it, the new transport opens on the last setting. */
+    pushParameterTargets();
     scheduler.reset();
 }
 
@@ -206,8 +271,9 @@ void EntangleAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
     juce::ScopedNoDenormals noDenormals;
 
-    if (const auto *blend = apvts.getRawParameterValue(blendParameterId))
-        smoothedBlendValue += (blend->load() - smoothedBlendValue) * blendSmoothingPerCallback;
+    /* Targets only: the ramp is the mix stage's and lives in the sample domain, so no time
+       constant here can depend on the host's callback size (D-011). */
+    pushParameterTargets();
 
     if (activeChannels <= 0)
         return;

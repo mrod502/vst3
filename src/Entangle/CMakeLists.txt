@@ -28,6 +28,10 @@ PRIVATE
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
         Engine
+        # Grain for the Mode 1 engine and its TransformFactory, FftJuce for the transform the
+        # shell injects at that seam. Fft arrives transitively: the processor names no Fft header.
+        Grain
+        FftJuce
         juce::juce_gui_extra
         juce::juce_gui_basics
         juce::juce_audio_utils

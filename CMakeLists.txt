@@ -10,6 +10,14 @@ endif()
 
 set(CMAKE_CXX_STANDARD 23)
 
+# Every static library here is reachable from Entangle.so, and the plugin is the only shared object
+# in the project. Non-PIC objects work by accident until a TU materialises the address of something
+# with external linkage — a vtable or a virtual method is what does it — and the shared link then
+# fails with "relocation R_AARCH64_ADR_PREL_PG_HI21 against symbol ... may bind externally" pointing
+# at a symbol nobody was editing (F-009). ON by default for the whole project beats chasing it one
+# library at a time.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # Release defines NDEBUG, which compiles out the assert() tripwires in src/ — D-004's
 # short-delivery guard in HopScheduler and the L|H and F>=2L-1 invariants in Grain. They are
 # deliberate, so they stay live at -O3.

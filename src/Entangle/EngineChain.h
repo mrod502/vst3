@@ -21,17 +21,22 @@ struct ChainConfig
     int maxHostBlock = 0;
 };
 
-/** Which of the two chains the builder can compose.
+/** Which of the chains the builder can compose.
 
     Shipped is what the plugin runs and what every leg that speaks about the product measures. RawWet
     leaves the safety stages out, which is the only way to assert engine physics — the delta anchor's
     shape, gain and arrival — against a stream that has not been reshaped on purpose. M3 item 2
     criterion C1: a leg names the variant it runs on, or the anchor stops pinning the engine's gain
-    the day a filter lands in front of it. */
+    the day a filter lands in front of it.
+
+    ClipperOnly exists for criterion B6: the DC blocker reshapes the anchor's envelope by design, so
+    an arrival index compared across Shipped and RawWet measures the filter. With only the clipper in
+    front of the engine, any movement of the arrival index can only be a delay in that stage. */
 enum class ChainVariant
 {
     Shipped,
-    RawWet
+    RawWet,
+    ClipperOnly
 };
 
 /** The composition that ships: the M3 mix law over the mode 1 grain engine, with the DC blocker on
@@ -46,6 +51,9 @@ inline std::unique_ptr<engine::MixEngine> makeChain(
     auto wet = std::make_unique<grain::GrainConvolutionEngine>(factory);
     if (variant == ChainVariant::RawWet)
         return std::make_unique<engine::MixEngine>(std::move(wet));
+    if (variant == ChainVariant::ClipperOnly)
+        return std::make_unique<engine::MixEngine>(std::move(wet), nullptr,
+                                                   std::make_unique<dsp::SoftClipper>());
 
     return std::make_unique<engine::MixEngine>(
         std::move(wet), std::make_unique<dsp::DcBlocker>(),

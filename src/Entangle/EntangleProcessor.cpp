@@ -223,6 +223,14 @@ void EntangleAudioProcessor::prepareToPlay(double sampleRateToUse, int samplesPe
 
 void EntangleAudioProcessor::reconfigureSafely()
 {
+    /* A layout change can arrive before the host has handed out a rate: getSampleRate() is 0 until
+       prepareToPlay, and a setBusesLayout during construction lands in exactly that window. There
+       is nothing to size against a rate of zero — the DC blocker asserts rather than derive a
+       filter for it, so a reconfigure here would abort the host instead of declining. The
+       prepareToPlay that follows a layout change does the work. */
+    if (getSampleRate() <= 0.0)
+        return;
+
     suspendProcessing(true);
     configureRings(getSampleRate(), getBlockSize());
     suspendProcessing(false);

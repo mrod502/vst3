@@ -1,5 +1,6 @@
 add_subdirectory(Entangle)
 add_subdirectory(Container)
+add_subdirectory(Dsp)
 add_subdirectory(Engine)
 add_subdirectory(Fft)
 add_subdirectory(FftJuce)

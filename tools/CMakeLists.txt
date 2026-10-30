@@ -9,12 +9,21 @@ target_compile_definitions(OfflineRender PRIVATE
 
 # vstplug is the plugin's shared code (libEntangle_SharedCode.a): the harness renders through
 # the same processor the VST3 bundle loads, instead of recompiling the shell.
+#
+# Grain and FftJuce are linked directly, not inherited: vstplug takes them PRIVATE, so §5.1's
+# reference chain — the same engine and transform with no shell in it — needs its own route to
+# both. src/Entangle is on the path for the processor's header, which names the parameter ids and
+# the clamp rule the harness asserts against.
 target_link_libraries(OfflineRender PRIVATE
     vstplug
     Engine
+    Grain
+    FftJuce
     juce::juce_audio_utils
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
+
+target_include_directories(OfflineRender PRIVATE ${CMAKE_SOURCE_DIR}/src/Entangle)
 
 if(BUILD_TESTING)
     add_test(NAME OfflineRender COMMAND OfflineRender)

@@ -48,8 +48,8 @@ vst3/                      # CMake project "vstplug", C++23
 ├── src/
 │   ├── CMakeLists.txt     # add_subdirectory(Entangle, Dsp, Container, Engine, Fft, FftJuce, Grain)
 │   ├── Container/         # container primitives: CircularBuffer (JUCE-light)
-│   ├── Dsp/               # signal primitives: FFT convolution, fade, extend, sine
-│   ├── Engine/            # hop-aligned engine seam: Engine.hpp, HopScheduler (JUCE-light)
+│   ├── Dsp/               # signal primitives: DcBlocker, SoftClipper, LevelDetector (JUCE-light)
+│   ├── Engine/            # hop-aligned engine seam: Engine.hpp, MixEngine, HopScheduler (JUCE-light)
 │   ├── Fft/               # transform seam: IFft contract, naive Dft oracle, half-spectrum product (JUCE-light)
 │   ├── FftJuce/           # the one JUCE-aware IFft adapter (calibrated engine gain, D-006)
 │   ├── Grain/             # mode 1 wet path: GrainHistory, OlaAccumulator, window/gain, GrainConvolutionEngine (JUCE-light)
@@ -66,13 +66,15 @@ Targets present after a configure (`cmake --build build/release --target help`):
 
 | Target | What it is |
 |---|---|
-| `vstplug` | The `juce_add_plugin` target (`PRODUCT_NAME "Entangle"`); compiles processor + editor. |
+| `vstplug` | The `juce_add_plugin` target (`PRODUCT_NAME "Entangle"`); compiles processor + editor and links `Engine` + `Grain` + `FftJuce`, so what ships is `MixEngine(GrainConvolutionEngine)` on a `fft::JuceFft`. |
 | `vstplug_VST3` / `vstplug_Standalone` | Format wrappers built from `vstplug`. |
-| `Dsp` | Static library for `src/Dsp`. |
+| `Dsp` | Static library for `src/Dsp` — `dsp::DcBlocker` (5 Hz Butterworth HP, D-013), `dsp::SoftClipper` (+6 dB ceiling, D-012) and `dsp::LevelDetector` (windowed RMS/peak plus an attack/release envelope, D-014). JUCE-light, links nothing but the assert switch. |
 | `Container` | Static library for `src/Container` (`container::CircularBuffer`). |
-| `Engine` | Static library for `src/Engine` (engine seam + `HopScheduler`); links `Container`. |
+| `Engine` | Static library for `src/Engine` (engine seam + `MixEngine` + `HopScheduler`); links `Container` + `Dsp`. |
 | `OfflineRender` | Console harness that renders through the plugin's shared code; registered with CTest. |
 | `ContainerTests`, `EngineTests` | Catch2 console test programs (§10). |
+| `DspTests` | Catch2 console program for all three classes (§10): corner, DC residue, passband flatness, chunk and channel invariance, the clipper's identity/monotonicity/ceiling/non-finite rules, and the detector's settling values, time constants, rate invariance, exact silence and 60 s drift. One binary — the allocation-counting legs replace global `operator new`, so it must stay the only one in the directory, and `ctest -R` filters these by case name, not by target name. |
+| `MixEngineTests` | Catch2 program for `engine::MixEngine` and the mix law (§10); its own binary because it replaces global `operator new` to prove the hop path does not allocate, which `EngineTests` already does. |
 | `FftTests`, `FftJuceTests` | Catch2 console test programs (§10); `FftJuceTests` links JUCE, `FftTests` does not. |
 | `Fft` | Static library for `src/Fft` — `fft::IFft` contract, `fft::Dft` oracle, `fft::multiplyHalfSpectrum` product. JUCE-light. |
 | `FftJuce` | Static library for `src/FftJuce` — `fft::JuceFft`, the only JUCE-aware transform. Links `Fft` + `juce::juce_dsp` (D-006). |
@@ -82,9 +84,14 @@ Targets present after a configure (`cmake --build build/release --target help`):
 | `CpuBaseline` | Console measurement of per-callback cost for M7 (F-007). Deliberately not in CTest — wall-clock on a shared host is not a pass/fail signal. |
 | `EntangleCatch2` | The Catch2 this repo builds itself, from pinned amalgamated sources (§10). |
 
-`Container`, `Engine`, `Fft`, `FftJuce` and `Grain` are registered in `src/CMakeLists.txt` and carry
+`Container`, `Dsp`, `Engine`, `Fft`, `FftJuce` and `Grain` are registered in `src/CMakeLists.txt` and carry
 their own `target_include_directories(... PUBLIC ...)`, so consumers `target_link_libraries`
 against them instead of leaning on the root `include_directories`.
+The console apps do not land beside their targets: `OfflineRender` is at
+`build/<config>/tools/OfflineRender_artefacts/Release/OfflineRender` and `CpuBaseline` at
+`build/<config>/tools/CpuBaseline`, so a direct run of the former through a guessed path fails with
+127. Prefer `ctest --test-dir build/<config> -R OfflineRender --output-on-failure`, which knows where
+it went and prints the section log on failure.
 Generated plugin bundles land under
 `build/<config>/src/Entangle/vstplug_artefacts/{VST3,Standalone}/`, or under
 `vstplug_artefacts/Debug/` when the cache carries `CMAKE_BUILD_TYPE=Debug`. The segment
@@ -111,6 +118,8 @@ Notation shared by code, tests and docs — never invent synonyms, and never use
 | `P` | partition size |
 | `N` | number of processed channels |
 | `p` | blend dial position in `[-1, 1]` |
+| `R` | the processor's declared latency, `latencySamples()` — what the host compensates and what the scheduler's pre-fill realises |
+| `W` | the wet path's own delay, `wetDelaySamples()`; equal to `R` unless an engine defers the wet stream further than the whole output (D-004) |
 
 ## 3. Tooling
 
@@ -180,9 +189,10 @@ For C++ sources added or modified here:
 * **Always leave a newline at the end of files** – consistent diff formatting.
 * **Do not touch existing dead code** – an unused variable, function or
   parameter stays as it is. Removing it may break expectations elsewhere.
-* **Templates live in headers** – the body must be visible to callers. The
-  existing `src/Dsp/*.cpp` files are translation-unit placeholders that only
-  include their header; logic does not belong there.
+* **Templates live in headers** – the body must be visible to callers. Where a
+  `src/Dsp/*.cpp` exists it holds out-of-line non-template bodies whose derivation
+  belongs away from the contract (`DcBlocker::prepare`'s coefficient maths); it is
+  not a placeholder to fill with logic that belongs in the header.
 * **One library, one namespace** (`dsp::`, `container::`). Never add
   `using namespace` at header scope — it leaks into every includer.
 * **Include style** – `<Header.hpp>` for a header from another library that is
@@ -273,8 +283,10 @@ Seams this project is built around:
   convolution code.
 * **Containers** — `src/Container` owns circular/FIFO buffers and the scratch
   storage policy. DSP asks for storage; it does not choose an allocator.
-* **Signal primitives** — `src/Dsp` (convolution, fade, extend, tone
-  generation): small, independent, composable, unaware the plugin exists.
+* **Signal primitives** — `src/Dsp` (the DC blocker, the output safety clipper and the level
+  detector today; convolution, fade, extend, tone generation as later milestones need them): small,
+  independent, composable, unaware the plugin exists. `engine::MixEngine` is the only place
+  that decides *which* of them run and in what order (D-012, D-013).
 * **Parameters** — one place maps host parameter IDs to typed, smoothed values.
 * **Scheduling** — hop/partition stepping is its own concept driven by the
   engine, not open-coded inside a processing loop.
@@ -351,9 +363,9 @@ its contract.
 
 | Component | Doc | Status |
 |---|---|---|
-| `src/Dsp` | `src/Dsp/README.md` | to write — primitives, their contracts and tolerances |
+| `src/Dsp` | `src/Dsp/README.md` | written — the safety stages' contracts and figures (D-012, D-013), the level detector's reading semantics and floors (D-014), threading, why the shell-level legs live elsewhere |
 | `src/Container` | `src/Container/README.md` | written — ring contract, capacity bound, threading |
-| `src/Engine` | `src/Engine/README.md` | written — engine seam, scheduler contract, ring sizing |
+| `src/Engine` | `src/Engine/README.md` | written — engine seam, mix law (D-010) and its ramps (D-011), the two safety stages and their order (D-012, D-013), scheduler contract, ring sizing |
 | `src/Fft` | `src/Fft/README.md` | written — `IFft` contract, spectrum layout, normalisation, `multiplyHalfSpectrum`, threading |
 | `src/FftJuce` | `JuceFft.hpp` + D-006/F-003 | no separate README — the gain-calibration rationale lives in the decision log |
 | `src/Grain` | `src/Grain/README.md` | written — wet-path seam, time origin and gain, OLA order (F-005), threading, two-backend test layout |
@@ -368,11 +380,12 @@ code structure — describe the contract and let the code be the structure.
 * `src/Entangle` internals are undocumented by design; the shell is being
   rebuilt around the seams in §9. Expect processor/editor contents to change
   completely.
-* `dsp::fft_convolve` has no return statement and uses `std::transform` without
-  including `<algorithm>`; nothing instantiates it, so a green build of that
-  file would be no evidence the template works.
 * `PLUGIN_CODE` is longer than the four characters JUCE requires, so configure
   warns on every run.
+* A `juce::NormalisableRange` with a non-dyadic interval cannot express its own
+  default or its own endpoints, so the blend and gain dials are quantised to
+  `1/128` and `0.125 dB` rather than the `0.01` the milestone text suggests
+  (F-010). The arithmetic lives in JUCE; the workaround stays until it does not.
 * `compose.yml` / `Dockerfile.dev` are Rust-era leftovers (Rust toolchain,
   Postgres client, `message-vault` naming) and build nothing here. The C++ build
   is verified on the host, not in that container.

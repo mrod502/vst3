@@ -2,7 +2,7 @@
 
 The processing seam the plugin shell drives. JUCE-light by rule (§9): no JUCE header in
 `Engine.hpp`, `PassthroughEngine.hpp`, `MixEngine.hpp` or `HopScheduler.hpp`, and the library links
-only `Container`, so it compiles and tests as a console program with no `AudioProcessor`.
+only `Container` and `Dsp`, so it compiles and tests as a console program with no `AudioProcessor`.
 
 ## The seam
 
@@ -26,14 +26,22 @@ hostBlock, and must not add delay beyond what `latencySamples()` declares. The s
 ## MixEngine (D-010, D-011)
 
 The stage the host's controls talk to. It wraps the wet Engine and applies
-`out = g · [ β · ( w_dry · dry + w_wet · conv ) + (1 − β) · A ]`, with `t = |p|` on the blend dial
-`p ∈ [-1, 1]`, `w_dry = sinf(t·π/2)`, `w_wet = cosf(t·π/2)`, `β` the bypass crossfade (1 effect,
-0 dry onto A) and `g` the gain dial converted from dB. The dry bus is A for `p < 0` and B otherwise,
-handing over at `p == 0`, where `w_dry == 0` makes it silent. `mixLawWeights` snaps `t == 0` to
-(0, 1) and `t >= 1` to (1, 0): `cosf(pi/2f)` is `-4.37e-08`, not zero, and a wet term surviving at a
+`out = clip( g · [ β · ( w_dry · dry + w_wet · block(conv) ) + (1 − β) · A ] )`, with `t = |p|` on the
+blend dial `p ∈ [-1, 1]`, `w_dry = sinf(t·π/2)`, `w_wet = cosf(t·π/2)`, `β` the bypass crossfade (1
+effect, 0 dry onto A) and `g` the gain dial converted from dB. The dry bus is A for `p < 0` and B
+otherwise, handing over at `p == 0`, where `w_dry == 0` makes it silent. `mixLawWeights` snaps `t == 0`
+to (0, 1) and `t >= 1` to (1, 0): `cosf(pi/2f)` is `-4.37e-08`, not zero, and a wet term surviving at a
 hard-dry dial makes "±1 is the pure dry render" unmeasurable. The no-sidechain pin that forces
 `p = -1` does **not** live here — the shell's `EngineChain.h` decides it, and this stage only knows
 the position it is handed.
+
+* **Two safety stages, in decision C's order (D-012, D-013).** The convolved stream passes through
+  `dsp::DcBlocker` *before* the sum — A and B reach the sum unfiltered, which is what keeps the ±1
+  endpoints bit-exact — and the summed, gain-scaled output passes through `dsp::SoftClipper` last, so
+  nothing downstream of this stage can exceed the ceiling. Neither has a say in the latency: the
+  blocker defers nothing and the clipper is memoryless. Both are installed by the three-argument
+  constructor; the two-argument one installs neither, which is what a harness that wants the chain
+  without the safety stages uses.
 
 * **No gain, no delay of its own.** `latencySamples()` and `wetDelaySamples()` forward untouched, so
   the wet path is exactly what the inner engine declared; the dry path needs no buffer of its own

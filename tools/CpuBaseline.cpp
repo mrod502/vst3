@@ -107,6 +107,7 @@ Result measure(int length, int hop, int hostBlock, int hops, const grain::Transf
     config.channels = channels;
     config.sidechainChannels = channels;
     config.maxHostBlock = hostBlock;
+    config.map = engine::ChannelMap::resolve(channels, channels, channels).map;
 
     engine::HopScheduler scheduler(engine);
     scheduler.prepare(config);

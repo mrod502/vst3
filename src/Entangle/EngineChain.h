@@ -3,6 +3,7 @@
 #include <DcBlocker.hpp>
 #include <GrainEngine.hpp>
 #include <HopScheduler.hpp>
+#include <LevelNormalizer.hpp>
 #include <MixEngine.hpp>
 #include <SoftClipper.hpp>
 
@@ -16,8 +17,9 @@ struct ChainConfig
     double sampleRate = 0.0;
     int hop = 0;
     int grainLength = 0;
-    int channels = 0;
+    int channels = 0;          ///< chA, the main input width.
     int sidechainChannels = 0; ///< 0 means the sidechain bus is absent (D-002)
+    int outputChannels = 0;    ///< the main output width; equal to chA for every layout the gate takes
     int maxHostBlock = 0;
 };
 
@@ -31,16 +33,23 @@ struct ChainConfig
 
     ClipperOnly exists for criterion B6: the DC blocker reshapes the anchor's envelope by design, so
     an arrival index compared across Shipped and RawWet measures the filter. With only the clipper in
-    front of the engine, any movement of the arrival index can only be a delay in that stage. */
+    front of the engine, any movement of the arrival index can only be a delay in that stage.
+
+    NoNormalizer is the shipped chain minus the level stage. M3 item 4 criterion C2 compares the delta
+    anchor's onset against a render with no correction, and C3 prints the L-spread table with the stage
+    beside the same table without it. Both need a named variant for the same reason as RawWet: without
+    one, the baseline is whatever the builder happened to install that day. */
 enum class ChainVariant
 {
     Shipped,
     RawWet,
-    ClipperOnly
+    ClipperOnly,
+    NoNormalizer
 };
 
-/** The composition that ships: the M3 mix law over the mode 1 grain engine, with the DC blocker on
-    the convolved stream and the soft clipper on the output (decision C's order).
+/** The composition that ships: the M3 mix law over the mode 1 grain engine, with the DC blocker and
+    the level normalizer on the convolved stream and the soft clipper on the output (decision C's
+    order, D-016 for the stage between them).
 
     One builder, two callers — EntangleAudioProcessor and OfflineRender's §5.1 reference render.
     Where the chain is assembled in two places, the harness silently stops comparing what ships and
@@ -55,9 +64,12 @@ inline std::unique_ptr<engine::MixEngine> makeChain(
         return std::make_unique<engine::MixEngine>(std::move(wet), nullptr,
                                                    std::make_unique<dsp::SoftClipper>());
 
-    return std::make_unique<engine::MixEngine>(
+    auto chain = std::make_unique<engine::MixEngine>(
         std::move(wet), std::make_unique<dsp::DcBlocker>(),
         std::make_unique<dsp::SoftClipper>());
+    if (variant != ChainVariant::NoNormalizer)
+        chain->installLevelNormalizer(std::make_unique<dsp::LevelNormalizer>());
+    return chain;
 }
 
 inline std::unique_ptr<engine::MixEngine> makeShippedChain(
@@ -69,13 +81,24 @@ inline std::unique_ptr<engine::MixEngine> makeShippedChain(
 /** The ring configuration for one prepare, R included.
 
     R is the M1 placeholder policy of D-004 — one hop — and this is the only place it is written, so
-    the shell and the harness can never be measuring two different latency models. */
+    the shell and the harness can never be measuring two different latency models.
+
+    This is where the M4 map is turned into ring sizes (D-017 as amended by D-018): the map it resolves
+    is what the scheduler turns into pointers, and the engine is sized by the processed count rather than
+    by either bus width. It consumes the map and does not decide the layout — `engine::gateLayout`
+    (LayoutGate.hpp) owns "may this layout exist at all" (D-021), and `configureRings` asks it before
+    trusting what comes back here. A `map.channels` of 0 means the rule serves no channel set for these
+    widths — prepare nothing and let the host hear silence; the status a host should be given is the
+    verdict `gateLayout` returns for the same triple. */
 inline engine::SchedulerConfig makeSchedulerConfig(const ChainConfig& chain)
 {
+    const engine::ResolvedChannelMap resolved =
+        engine::ChannelMap::resolve(chain.channels, chain.sidechainChannels, chain.outputChannels);
+
     engine::EngineConfig engineConfig;
     engineConfig.sampleRate = chain.sampleRate;
     engineConfig.hop = chain.hop;
-    engineConfig.maxChannels = chain.channels;
+    engineConfig.maxChannels = resolved.map.channels;
     engineConfig.latencySamples = chain.hop;
     engineConfig.grainLength = chain.grainLength;
 
@@ -84,6 +107,7 @@ inline engine::SchedulerConfig makeSchedulerConfig(const ChainConfig& chain)
     schedulerConfig.channels = chain.channels;
     schedulerConfig.sidechainChannels = chain.sidechainChannels;
     schedulerConfig.maxHostBlock = chain.maxHostBlock;
+    schedulerConfig.map = resolved.map;
     return schedulerConfig;
 }
 

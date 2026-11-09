@@ -5,7 +5,7 @@
 EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcessor &p)
     : juce::AudioProcessorEditor (&p), processorRef (p)
 {
-    setSize (400, 300);
+    setSize (400, 360);
     otherLookAndFeel.setColour (juce::Slider::thumbColourId, juce::Colours::red);
 
     blend.setLookAndFeel (&otherLookAndFeel);
@@ -30,7 +30,10 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
 
     hopCaption.setText ("Hop (samples)", juce::dontSendNotification);
     grainCaption.setText ("Grain length (samples)", juce::dontSendNotification);
-    for (juce::Label* caption : { &hopCaption, &grainCaption, &grainReadout, &blendReadout })
+    normalisationCaption.setText ("Normalisation amount", juce::dontSendNotification);
+    silenceFloorCaption.setText ("Silence floor", juce::dontSendNotification);
+    for (juce::Label* caption : { &hopCaption, &grainCaption, &grainReadout, &blendReadout,
+                                  &normalisationCaption, &silenceFloorCaption, &layoutReadout })
     {
         caption->setFont (11.0f);
         caption->setColour (juce::Label::textColourId, juce::Colours::grey);
@@ -46,6 +49,23 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
     outputGain.setTextValueSuffix (" dB");
     addAndMakeVisible (&outputGain);
 
+    normalisationAmount.setLookAndFeel (&otherLookAndFeel);
+    normalisationAmount.setSliderStyle (juce::Slider::LinearHorizontal);
+    normalisationAmount.setRange (EntangleAudioProcessor::normalisationAmountMin,
+                                  EntangleAudioProcessor::normalisationAmountMax,
+                                  EntangleAudioProcessor::normalisationAmountStep);
+    normalisationAmount.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 20);
+    addAndMakeVisible (&normalisationAmount);
+
+    silenceFloor.setLookAndFeel (&otherLookAndFeel);
+    silenceFloor.setSliderStyle (juce::Slider::LinearHorizontal);
+    silenceFloor.setRange (EntangleAudioProcessor::silenceFloorMinDb,
+                           EntangleAudioProcessor::silenceFloorMaxDb,
+                           EntangleAudioProcessor::silenceFloorStepDb);
+    silenceFloor.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 20);
+    silenceFloor.setTextValueSuffix (" dB");
+    addAndMakeVisible (&silenceFloor);
+
     bypassToggle.setClickingTogglesState (true);
     bypassToggle.setLookAndFeel (&otherLookAndFeel);
     addAndMakeVisible (&bypassToggle);
@@ -54,6 +74,11 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
         (p.apvts, EntangleAudioProcessor::blendParameterId, blend);
     outputGainAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
         (p.apvts, EntangleAudioProcessor::outputGainParameterId, outputGain);
+    normalisationAmountAttachment =
+        std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
+            (p.apvts, EntangleAudioProcessor::normalisationAmountParameterId, normalisationAmount);
+    silenceFloorAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
+        (p.apvts, EntangleAudioProcessor::silenceFloorParameterId, silenceFloor);
     hopAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>
         (p.apvts, EntangleAudioProcessor::hopParameterId, hopSelector);
     grainAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>
@@ -70,7 +95,10 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
     // The blend readout reports the pinned position, and the pin follows the bus layout, which can
     // change with no parameter event reaching this editor. Ticking is the only honest way to keep it
     // truthful; the value it reads is the processor's cached bus state, not DSP state.
+    // The layout readout rides the same tick for the same reason: a layout change re-prepares with no
+    // parameter event either, and it is the event this line exists to record.
     updateBlendReadout();
+    updateLayoutReadout();
     startTimer (100);
 }
 
@@ -117,6 +145,19 @@ void EntangleAudioProcessorEditor::updateGrainReadout()
 void EntangleAudioProcessorEditor::timerCallback()
 {
     updateBlendReadout();
+    updateLayoutReadout();
+}
+
+void EntangleAudioProcessorEditor::updateLayoutReadout()
+{
+    const auto report = processorRef.layoutReport();
+    if (report == layoutReadout.getText())
+        return;
+
+    layoutReadout.setText (report, juce::dontSendNotification);
+    // The whole line, because the visible one cannot hold it: a record that is pasted into a host-matrix
+    // table has to be readable in full somewhere other than the pixel budget of a label.
+    layoutReadout.setTooltip (report);
 }
 
 void EntangleAudioProcessorEditor::updateBlendReadout()
@@ -149,7 +190,12 @@ void EntangleAudioProcessorEditor::resized()
     grainSelector.setBounds (180, 90, 120, 25);
     grainCaption.setBounds (180, 72, 160, 16);
     grainReadout.setBounds (180, 118, 210, 16);
+    layoutReadout.setBounds (160, 140, 232, 16);
     blendReadout.setBounds (40, 210, 320, 16);
     outputGain.setBounds (40, 165, 250, 30);
     bypassToggle.setBounds (300, 168, 80, 25);
+    normalisationCaption.setBounds (40, 236, 200, 16);
+    normalisationAmount.setBounds (40, 252, 250, 26);
+    silenceFloorCaption.setBounds (40, 286, 200, 16);
+    silenceFloor.setBounds (40, 302, 250, 26);
 }

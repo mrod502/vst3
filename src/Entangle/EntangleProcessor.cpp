@@ -1,8 +1,59 @@
 #include "EntangleProcessor.h"
 #include "EntangleEditor.h"
 #include "Entangle.h"
+#include <LayoutGate.hpp>
 #include <algorithm>
 #include <iostream>
+
+namespace
+{
+/** The report's two gate words. The harness keeps its own mapping (`OfflineRender` §5.18) and §5.21 C1
+    compares this one against it field by field, so a report that names a verdict the gate did not return
+    reddens a leg rather than quietly describing a layout that is not running. */
+const char* gateVerdictText(engine::LayoutVerdict verdict) noexcept
+{
+    switch (verdict)
+    {
+        case engine::LayoutVerdict::accepted:
+            return "accepted";
+        case engine::LayoutVerdict::mainWidth:
+            return "mainWidth";
+        case engine::LayoutVerdict::mainCountMismatch:
+            return "mainCountMismatch";
+        case engine::LayoutVerdict::channelRule:
+            return "channelRule";
+    }
+    return "unknown";
+}
+
+const char* gateRuleText(engine::ChannelMapStatus status) noexcept
+{
+    switch (status)
+    {
+        case engine::ChannelMapStatus::ok:
+            return "ok";
+        case engine::ChannelMapStatus::empty:
+            return "empty";
+        case engine::ChannelMapStatus::asymmetric:
+            return "asymmetric";
+        case engine::ChannelMapStatus::countMismatch:
+            return "countMismatch";
+        case engine::ChannelMapStatus::exceedsCapacity:
+            return "exceedsCapacity";
+    }
+    return "unknown";
+}
+
+/* The line's prefix, formatted where the report is read rather than where its body was built. A declined
+   arrival never reaches refreshLayoutReport, so counters frozen at the last real prepare could never show
+   one — and "a skipped arrival proves the guard ran" is the only outside view of D-022 B there is. Callers
+   hold layoutReportLock. */
+juce::String layoutReportCounters(int prepares, int skipped)
+{
+    return "entangle layout prepares=" + juce::String(prepares)
+           + " skipped=" + juce::String(skipped) + " ";
+}
+}
 
 juce::AudioProcessorValueTreeState::ParameterLayout EntangleAudioProcessor::makeLayout()
 {
@@ -36,7 +87,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout EntangleAudioProcessor::make
             0.0f,
             juce::AudioParameterFloatAttributes().withLabel("dB")),
         std::make_unique<juce::AudioParameterBool>(
-            juce::ParameterID{bypassParameterId, 1}, "Bypass", false));
+            juce::ParameterID{bypassParameterId, 1}, "Bypass", false),
+        std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{normalisationAmountParameterId, 1}, "Normalisation amount",
+            juce::NormalisableRange<float>{normalisationAmountMin, normalisationAmountMax,
+                                           normalisationAmountStep},
+            1.0f),
+        std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{silenceFloorParameterId, 1}, "Silence floor",
+            juce::NormalisableRange<float>{silenceFloorMinDb, silenceFloorMaxDb,
+                                           silenceFloorStepDb},
+            silenceFloorDefaultDb,
+            juce::AudioParameterFloatAttributes().withLabel("dB")));
     return layout;
 }
 
@@ -122,26 +184,21 @@ void EntangleAudioProcessor::changeProgramName(int index, const juce::String &ne
 //==============================================================================
 bool EntangleAudioProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const
 {
+    /* The rule is engine::gateLayout's (D-021): this function only translates the host's bus shapes into
+       the three counts it takes. A disabled sidechain bus is chB == 0, which is not a mono sidechain
+       (D-002), and the answer is computed from the layout it is handed — never from sidechainActive or any
+       other cached member, because a host asks about layouts it has not applied.
+
+       The gate keeps the main bus at mono or stereo instead of opening it to the ceiling the channel map
+       resolves because some hosts, such as certain GarageBand versions, will only load plugins that support
+       a stereo bus layout. That is D-021 A's reason, and it is not recoverable from the code. */
     const auto mainIn = layouts.getMainInputChannelSet();
     const auto mainOut = layouts.getMainOutputChannelSet();
-
-    // The engine emits one output channel per input channel and the dry add reads the same index
-    // on both buses; M4 relaxes this once the engine owns the channel map.
-    if (mainIn != mainOut)
-        return false;
-
-    // Some hosts, such as certain GarageBand versions, will only load plugins that support
-    // a stereo bus layout.
-    if (mainIn != juce::AudioChannelSet::mono() && mainIn != juce::AudioChannelSet::stereo())
-        return false;
-
-    // A host that offers no second bus, or leaves it switched off, is a supported state
-    // rather than a rejected one: B is silence (D-001, D-002).
     const auto sidechain = layouts.getChannelSet(true, 1);
-    if (sidechain.isDisabled())
-        return true;
+    const int sidechainChannels = sidechain.isDisabled() ? 0 : sidechain.size();
 
-    return sidechain == juce::AudioChannelSet::mono() || sidechain == juce::AudioChannelSet::stereo();
+    return engine::gateLayout(mainIn.size(), sidechainChannels, mainOut.size()).verdict
+           == engine::LayoutVerdict::accepted;
 }
 
 int EntangleAudioProcessor::currentHopIndex() const
@@ -176,31 +233,134 @@ int EntangleAudioProcessor::grainLengthSamples() const
 
 void EntangleAudioProcessor::configureRings(double sampleRateToUse, int samplesPerBlock)
 {
-    const int channels = std::min(getChannelCountOfBus(true, 0), getChannelCountOfBus(false, 0));
     auto *sidechainBus = getBus(true, 1);
     const bool sidechainIsLive = sidechainBus != nullptr && sidechainBus->isEnabled();
-
-    activeChannels = channels;
-    sidechainActive = sidechainIsLive;
-
-    if (channels <= 0)
-        return;
 
     entangle::ChainConfig chain;
     chain.sampleRate = sampleRateToUse;
     chain.hop = hopValues[static_cast<std::size_t>(currentHopIndex())];
     chain.grainLength = clampGrainLength(requestedGrainLengthSamples(), chain.hop);
-    chain.channels = channels;
+    chain.channels = getChannelCountOfBus(true, 0);
     chain.sidechainChannels = sidechainIsLive ? getChannelCountOfBus(true, 1) : 0;
-    chain.maxHostBlock = std::max(samplesPerBlock, maxHostBlockSamples);
+    chain.outputChannels = getChannelCountOfBus(false, 0);
+    chain.maxHostBlock = maxHostBlockFor(samplesPerBlock);
 
+    /* One triple, two readers: the gate decides whether it may run at all and the scheduler config turns
+       the map it resolved into ring sizes (D-021 G). They cannot disagree — `processed == map.channels` on
+       every triple the gate accepts, and both are 0 on a `channelRule` refusal — which is what lets the
+       early return below mean "the gate said no" rather than "the map was empty for a reason nobody
+       named". `isBusesLayoutSupported` refuses the layouts that used to arrive here and fall through it,
+       so AGENTS §13's silence-is-not-a-refusal gap is closed; the return stays because processBlock has to
+       be total and a zero-channel bus is a state the host can hand over without asking the gate anything. */
+    const engine::LayoutDecision layout =
+        engine::gateLayout(chain.channels, chain.sidechainChannels, chain.outputChannels);
     const engine::SchedulerConfig schedulerConfig = entangle::makeSchedulerConfig(chain);
+
+    activeChannels = layout.processed;
+    sidechainActive = sidechainIsLive;
+
+    if (activeChannels <= 0)
+    {
+        /* A refusal is never remembered. Storing the key of a triple that was not prepared would make the
+           next one skippable, and a skipped prepare on a configuration that was never built is silence with
+           no reason attached. */
+        preparedKey.reset();
+        return;
+    }
+
+    /* Conditional re-prepare (D-022 B): the seven-field key is the whole configuration the rings, the engine
+       and the latency pre-fill were built for, so an arrival that changes none of them does not rebuild them,
+       drop the tail or reconstruct the transform. It sits after the two cached members above so the live-bus
+       state is never left describing a layout the host stopped asking for, and before the prepare so the
+       comparison and the rebuild have one owner. `grainLength` is the post-clamp value, which is what lets a
+       dial move the clamp swallows be recognised as no change at all. */
+    const engine::ReconfigureKey key{sampleRateToUse,
+                                     samplesPerBlock,
+                                     chain.channels,
+                                     chain.sidechainChannels,
+                                     chain.outputChannels,
+                                     chain.hop,
+                                     chain.grainLength};
+    if (preparedKey.has_value() && *preparedKey == key)
+    {
+        {
+            const juce::ScopedLock scoped(layoutReportLock);
+            ++skippedArrivalCount;
+        }
+        return;
+    }
+
+    preparedKey = key;
     engineConfig = schedulerConfig.engine;
 
     pushParameterTargets();
 
     scheduler.prepare(schedulerConfig);
     setLatencySamples(schedulerConfig.engine.latencySamples);
+    refreshLayoutReport(layout, chain, sampleRateToUse, samplesPerBlock);
+}
+
+juce::String EntangleAudioProcessor::layoutReport() const
+{
+    const juce::ScopedLock scoped(layoutReportLock);
+    return layoutReportCounters(prepareCount, skippedArrivalCount) + layoutReportBody;
+}
+
+/* The one place the report is written (D-023 B): the configuration that has just been built, read back off
+   the live buses rather than from `chain`, so a field that disagrees with an accessor is a bug in one of the
+   two and §5.21 C1's cross-check against the accessors is what finds it.
+
+   The log line goes out only when a message manager exists *and* this thread is it. That is not tidiness:
+   `writeToLog` reaches stdout or NSLog, which can block, and hosts are known to call `prepareToPlay` from
+   odd threads. A host that prepares elsewhere still gets the editor readout — and if a host turns out never
+   to show either, D-023's revisit trigger moves the delivery to the readout alone. The instance check comes
+   first because a harness with no message manager at all is one `main()` edit away. */
+void EntangleAudioProcessor::refreshLayoutReport(const engine::LayoutDecision& decision,
+                                                 const entangle::ChainConfig& chain,
+                                                 double sampleRateToUse, int samplesPerBlock)
+{
+    auto describeBus = [](const char* name, const juce::AudioProcessor::Bus* bus)
+    {
+        if (bus == nullptr)
+            return juce::String(name) + "=0 " + juce::String(name) + "Name=[none] " + name + "En=0";
+
+        const auto& set = bus->getCurrentLayout();
+        return juce::String(name) + "=" + juce::String(set.size())
+               + " " + name + "Name=[" + set.getDescription() + "]"
+               + " " + name + "En=" + juce::String(bus->isEnabled() ? 1 : 0);
+    };
+
+    juce::String body;
+    juce::String report;
+    {
+        const juce::ScopedLock scoped(layoutReportLock);
+        ++prepareCount;
+
+        body = "inBuses=" + juce::String(getBusCount(true))
+               + " outBuses=" + juce::String(getBusCount(false))
+               + " " + describeBus("mainIn", getBus(true, 0))
+               + " " + describeBus("side", getBus(true, 1))
+               + " " + describeBus("mainOut", getBus(false, 0))
+               + " gate=" + gateVerdictText(decision.verdict)
+               + "/" + gateRuleText(decision.rule)
+               + " processed=" + juce::String(decision.processed)
+               + " outCh=" + juce::String(getTotalNumOutputChannels())
+               + " rate=" + juce::String(sampleRateToUse)
+               + " hop=" + juce::String(chain.hop)
+               + " Lreq=" + juce::String(requestedGrainLengthSamples())
+               + " Lrun=" + juce::String(chain.grainLength)
+               + " R=" + juce::String(getLatencySamples())
+               + " block=" + juce::String(samplesPerBlock) + "/"
+               + juce::String(chain.maxHostBlock)
+               + " sideActive=" + juce::String(sidechainActive ? 1 : 0)
+               + " blendEff=" + juce::String(effectiveBlendPosition(), 3);
+
+        layoutReportBody = body;
+        report = layoutReportCounters(prepareCount, skippedArrivalCount) + body;
+    }
+
+    if (juce::MessageManager::existsAndIsCurrentThread())
+        juce::Logger::writeToLog(report);
 }
 
 float EntangleAudioProcessor::rawParameter(const juce::String &parameterId, float fallback) const noexcept
@@ -214,6 +374,10 @@ void EntangleAudioProcessor::pushParameterTargets()
     engine->setBlendTarget(effectiveBlendPosition());
     engine->setOutputGainTarget(rawParameter(outputGainParameterId, 0.0f));
     engine->setBypassTarget(rawParameter(bypassParameterId, 0.0f) >= 0.5f);
+    engine->setNormalisationAmountTarget(
+        rawParameter(normalisationAmountParameterId, dsp::LevelNormalizer::defaultAmount));
+    engine->setSilenceFloorTarget(
+        rawParameter(silenceFloorParameterId, dsp::LevelNormalizer::defaultFloorDb));
 }
 
 void EntangleAudioProcessor::prepareToPlay(double sampleRateToUse, int samplesPerBlock)
@@ -261,6 +425,10 @@ void EntangleAudioProcessor::releaseResources()
 {
     // When playback stops, you can use this as an opportunity to free up any
     // spare memory, etc.
+    preparedKey.reset(); /* and forget what was prepared: the host must call prepareToPlay again, and the
+                            guard of D-022 B must not talk it out of doing the work. Freeing something here
+                            behind a remembered key would be the one way to run a transport on state that is
+                            gone — §5 arm 11, and the leg in OfflineRender §5.19 that reddens it. */
 }
 
 void EntangleAudioProcessor::reset()

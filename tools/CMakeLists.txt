@@ -34,3 +34,32 @@ endif()
 # shared machine are a measurement to record for M7, not a pass/fail signal.
 add_executable(CpuBaseline CpuBaseline.cpp)
 target_link_libraries(CpuBaseline PRIVATE Grain Engine Fft FftJuce)
+
+# The M4 item-04 prepare-time footprint instrument: it counts live bytes through a replaced global
+# operator new, so it cannot join OfflineRender (which must stay free of that hook) or any of the Engine
+# test binaries, and it is deliberately not registered with CTest on CpuBaseline's stated grounds — a
+# footprint measured on one host through one transform backend is a figure to record, not a pass/fail
+# signal (D-022 C). It links vstplug for createPluginFilter(), so the shell figure is the shell that ships.
+juce_add_console_app(PrepareFootprint PRODUCT_NAME "Entangle Prepare Footprint")
+
+target_sources(PrepareFootprint PRIVATE PrepareFootprint.cpp)
+
+target_compile_definitions(PrepareFootprint PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0)
+
+if(ENTANGLE_ASSERTS)
+    target_compile_definitions(PrepareFootprint PRIVATE ENTANGLE_ASSERTS_CONFIGURED=1)
+endif()
+
+target_link_libraries(PrepareFootprint PRIVATE
+    vstplug
+    Engine
+    Grain
+    FftJuce
+    juce::juce_audio_utils
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+target_include_directories(PrepareFootprint PRIVATE ${CMAKE_SOURCE_DIR}/src/Entangle)

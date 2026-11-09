@@ -546,6 +546,7 @@ inline void expectBlockSizeInvariance(const grain::TransformFactory& factory, co
         schedulerConfig.channels = 1;
         schedulerConfig.sidechainChannels = 1;
         schedulerConfig.maxHostBlock = largest;
+        schedulerConfig.map = engine::ChannelMap::resolve(1, 1, 1).map;
 
         engine::HopScheduler scheduler(engine);
         scheduler.prepare(schedulerConfig);

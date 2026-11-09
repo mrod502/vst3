@@ -20,7 +20,15 @@ decisions but cost hours to rediscover.
 | D-012 | Output safety stage: memoryless tanh clip, knee 0 dBFS, ceiling +6 dB | accepted (M3) |
 | D-013 | DC blocker on the convolved path: 5 Hz, second-order Butterworth, wet path only | accepted (M3) |
 | D-014 | Level detector: measurement only, two-stage envelope, exact silence | accepted (M3); its revisit trigger fired 2026-10-30 — D-015 takes the target and the driving reading, the class and its measured figures stand |
-| D-015 | Normalisation target: geometric-mean RMS of A and B, smoothed envelope as driver, UI floor with unity below it | accepted (M3) — **decided, not yet implemented** |
+| D-015 | Normalisation target: geometric-mean RMS of A and B, smoothed envelope as driver, UI floor with unity below it | accepted (M3); implemented by **D-016** (2026-10-31) — measured, and every figure it owed is in that entry |
+| D-016 | Level normalizer: where the stage sits in the chain, the gate, the derived values, the non-finite rule | accepted (M3), implemented and measured |
+| D-017 | The M4 channel rule: broadcast from one channel only, asymmetric rejected, ceiling 8 | accepted (M4), implemented and measured; **consumed since 2026-11-04 by `HopScheduler`** (item 02 resolves it into pointers) and, through `engine::gateLayout`, by `isBusesLayoutSupported` (**D-021**, same day). **Its `chA == 1 && chB >= 2` row is superseded by D-018**, which landed 2026-11-02 — the helper folds that family now and its `static_assert`s pin the folded shape |
+| D-018 | Mono main consolidates the sidechain to a mono mean; every other layout needs main ≥ sidechain | accepted (M4) 2026-11-02, map half implemented by item 09 the same day, **mean computed and level measured 2026-11-04** by item 02 in `HopScheduler`. The −3 dB level consequence stated here is **corrected by that measurement**: the fold is −2.985 dB, the applied correction moves **+1.558 dB**; audibility stays M9 row 2's. **Host-reachable since 2026-11-04** — D-021's gate admits `(1, chB 2…8, 1)`, so a layout that folds is one a host can select, and §5.18 renders it |
+| D-019 | Shared-spectrum optimisation: not in the engine API now; the seam already fits M7 | accepted (M4) 2026-11-02 — closes M4 §4 item 6 as "not now" |
+| D-020 | Independent per-channel normalisation stays; linking moves to M9 behind a measurement | accepted (M4) 2026-11-02 — no code change, row stays open on the user's host |
+| D-021 | The layout gate: two rules of its own above `resolve`, main bus mono/stereo, sidechain to 8 | accepted (M4) 2026-11-04 with the user (A widths, B wide-main deferral, C reasons), **implemented and measured the same day** as `engine::gateLayout` + `LayoutGateTests` (9 cases / 9 125 assertions) and `OfflineRender` §5.18. Closes the "silence is not a refusal" gap and makes the D-018 fold host-reachable; wide mains deferred behind item 04 + a cost curve + M4 §6 — **item 04's figures landed 2026-11-05 (D-022 C), so two of those three triggers remain** |
+| D-022 | Prepare-time sizing: a floor with a name, a re-prepare keyed on seven fields, a footprint measured rather than bounded | accepted (M4) 2026-11-04 with the user (A floor, B conditional, C recorded), **implemented and measured 2026-11-05** as `engine::ReconfigureKey` + `ReconfigureTests` (14 cases / 182 assertions) + `EntangleAudioProcessor::maxHostBlockFor` + `OfflineRender` §5.19 + `tools/PrepareFootprint`. `ctest` 175 → 189. An unchanged arrival no longer disturbs a running transport (0 bytes, bit-identical); the wide-main cost is on record at 1.00 MiB stereo / 1.02 MiB for the 8-wide fold |
+| D-023 | The layout report: one line naming what the plugin was *told*, built at the tail of a real prepare and delivered twice | accepted (M4) 2026-11-06 as `08` §0 B/C/D, **implemented and measured 2026-11-08** as `EntangleAudioProcessor::layoutReport()` + the editor's `layoutReadout` + `OfflineRender` §5.21 (28 lines, 0 FAIL) and `docs/host-layout-matrix.md`. Counts, `getDescription()` names, gate words, `processed`, `R`, hop, both `L` figures, block/floor, `sideActive`, `blendEff`, and `prepares=`/`skipped=` — the last pair formatted at read time, because a declined arrival rebuilds nothing and D-022 B is otherwise invisible. **The host rows it exists to answer are all open** (INDEX §3 rule 4): the instrument is measured, the answers are not |
 | F-001 | JUCE 9 latency plumbing | finding |
 | F-002 | `/tmp` was noexec and broke juceaide | finding |
 | F-003 | JUCE real-only FFT: per-engine scaling, locking fallback, untestable slot clearing, macOS vDSP measured | finding |
@@ -32,6 +40,13 @@ decisions but cost hours to rediscover.
 | F-009 | `libFftJuce.a` holds the whole JUCE module closure, and non-PIC until a shared object links it | finding, fixed 2026-10-28 |
 | F-010 | A JUCE float parameter with a non-dyadic interval cannot express its own default or its own endpoints | finding, worked around in D-011 |
 | F-011 | The delta anchor is a DC-heavy signal, so a filter in front of §5.3 un-pins the engine's gain | finding |
+| F-012 | A modulo channel map is invisible to the tests, and three other mutation predictions that did not hold | finding |
+| F-013 | A rule keyed to the main bus shape leaves commutativity with no domain to be tested over | finding |
+| F-014 | A B-side hop buffer sized by one count and indexed by another: a live overflow in a supported layout, invisible to 158 value-level legs | finding, fixed 2026-11-04 by M4 item 02 — the memory-safety leg is now part of the item's bar |
+| F-015 | JUCE asks the gate two different questions: `setBusesLayout` applies the layout verbatim or nothing, the per-bus setters substitute through `getNextBestLayout` and can move a bus the host never touched | finding, measured 2026-11-04 in `OfflineRender` §5.18 — no code change; drive layouts with `setBusesLayout`, and read any "the sidechain takes 8" claim as conditional on the main bus (advertisement: 8 beside mono, 2 beside stereo) |
+| F-016 | A footprint figure built by re-evaluating the sizing expression cannot notice the expression changing, and the documented bound understated the engine by 1.5F | finding, measured 2026-11-05 — `EntangleProcessor.h` said `9F + 6` plus the transform's `2F` where `GrainEngine.cpp:49`/`:60-65` + `Window.cpp:13` + `JuceFft.cpp:29` are `10.5F + 6` mono and `12.5F + 6` stereo (96 KiB at the default grain length, 768 KiB at the cap); §5.18 printed rings + hop scratch from its own copy of `maxHostBlockSamples + hop`, and two harness `ChainConfig`s copied the floor's `std::max`. Fixed: the floor has one home (`maxHostBlockFor`, called by the harness), §5.18's figure is labelled a restatement, and the measured tables come from `tools/PrepareFootprint` |
+| F-017 | A leg whose expected output is produced by the component under test cannot witness a mutation inside that component, and a harness fill sized by the applied layout crashes instead of reporting | finding, measured 2026-11-06 in the M4 item 06 arms — arm 6 (`hopA[slot] = slot`) left `OfflineRender` §5.20 green at 175 `ok` / 0 `FAIL` and was caught only by `EngineTests` #61, and arm 2 (a broadcast B slot resolved to silence) left both broadcast cells green, because every §5.20 model builds its own `engine::HopScheduler` and moves with the mutant. Fixed in the same item: mapped slots must carry a sample in absolute terms as well as match their model (`deadMapped` in M4/M5), which turns arm 2 into 37 red matrix lines, and M1's fills are bounded by the cell's streams with the five sample legs gated on M1, which turns the layout-misapplying arm 7b from a SIGSEGV inside `checkChannelMatrix` into 9 M1 FAIL lines |
+| F-018 | JUCE claims a message thread for whoever constructs one, calls a disabled bus `Discrete #0`, and a prepare-snapshot report can never name a refusal | finding, measured 2026-11-08 building the M4 item 08 instrument — `MessageManager`'s constructor records its own thread (juce_MessageManager.cpp:38), so `initialiseJuce_GUI()` makes a console harness's `main()` the message thread and the report guard passes there for every prepare, while `setCurrentThreadAsMessageThread()` is called only from the plugin client (juce_audio_plugin_client_VST3.cpp:280); `AudioChannelSet::disabled().getDescription()` is `Discrete #0`, not `Disabled`, because `isDiscreteLayout()` is tested first (juce_AudioChannelSet.cpp:424) — with the pinned naming table for D-021 B's third trigger (`6:5.1 Surround`, `8:7.1 Surround`, `4:1st Order Ambisonics`, `9:2nd Order Ambisonics`, `4:Quadraphonic`); there is **no `AudioChannelSet::getName()`**, only `getDescription()`; a report built from a prepare can never carry `mainWidth`/`channelRule`, because §5.18 measured 0 of 192 probes landing on a refused layout; and `OfflineRender` under LeakSanitizer reports 14.48 MB in 297 records, **every one** through `juce::dsp::FFT`'s FFTW backend (`FFTWImpl::create`), 274 of them (12.0 MB) from legs that predate item 08 — a third-party at-exit report, not product leakage |
 
 ---
 
@@ -883,10 +898,13 @@ alone.
 
 ## D-015 — Normalisation target: geometric-mean RMS of A and B, smoothed envelope, UI floor with unity below it
 
-**Status first.** The decision was taken by the project owner on 2026-10-30. **Nothing in `src/`
-implements it yet** — `plan/M3-impl-plan/04-level-normalizer.md` is written against it and its §2 row is
-`Not started`. Every consequence below is arithmetic, not measurement: no figure in this entry was
-measured, and the implementation item owes the numbers.
+**Status first.** The decision was taken by the project owner on 2026-10-30 and **implemented and
+measured on 2026-10-31 as D-016**, which carries the figures it owed. Everything below was arithmetic
+when it was written, and the arithmetic held: the geometric-mean target reproduces to 2.4e-07 dB on the
+held level, the half-slope is 6 dB for a 12 dB change on one bus, and the arithmetic mean sits 1.9382 dB
+off where the geometric one puts the held level. The two places measurement disagreed with expectation
+are recorded in D-016, not here, because both are about wiring and program level rather than about this
+target.
 
 **Context.** Three questions gate M3 §4.2, and through it §4.5's normalisation-amount dial and §7's
 ±2 dB flatness gate: what level the gain drives the convolved path toward, which reading measures it,
@@ -977,6 +995,783 @@ silence, the gate condition and its hysteresis are the thing to change, not the 
 The brief those questions were originally routed through — `01-agent-brief.md` §8 Q5 — does not exist in
 the tree or in history, so the option list they were answered against is `INDEX.md` §9's paraphrase plus
 M3 §3's own bullets, not a quotation (`INDEX.md` §8.11).
+
+---
+
+## D-016 — Level normalizer: where the stage sits, what gates, the derived values, the non-finite rule
+
+**Status first.** Implemented and measured 2026-10-31: `dsp::LevelNormalizer` (`src/Dsp`), fed and
+applied by `engine::MixEngine` between the DC blocker and the law, installed by
+`entangle::makeChain` in `ChainVariant::Shipped`, driven by the two host controls
+`normalisationAmount` and `silenceFloor`. D-015 owns the target and the driving reading; this entry owns
+the wiring, the gate, the numbers D-015 left open, and what a bad reading does. Figures are from
+`DspTests`, `MixEngineTests` and `tools/OfflineRender.cpp` on the tree as landed, in-container
+aarch64 `Release` with LTO on the JUCE-linked targets.
+
+**Context.** Six things had to be pinned before the target could run: which library owns the arithmetic,
+where in the chain the stage sits, where `envConv` is measured, what the floor actually gates, the gain
+range and slew, and what happens when a reading is not a number. `plan/M3-impl-plan/04-level-normalizer.md`
+§0 took them as decisions A–G; the three that are architecture rather than tuning are recorded here
+because they are the ones a later reader cannot recover from a diff.
+
+**The decision.**
+
+* **One primitive, three detectors, installed by a setter.** `dsp::LevelNormalizer` owns three
+  `LevelDetector`s — A, B, conv — each with a one-hop window, and does the read/combine/gate/limit/ramp
+  arithmetic. `MixEngine` still decides what runs and in what order (D-012's rule): it feeds the stage,
+  scales `scratch`, and multiplies. The stage is installed by `installLevelNormalizer` rather than a
+  fourth constructor argument because it runs *before* the last of the two stages the constructor already
+  orders, and a positional `(blocker, clipper, normalizer)` would say the opposite of what the chain
+  does. It asserts a not-yet-prepared engine: the hop it ramps over is sized in `prepare`.
+* **Insertion point: after the blocker, before the law.** The order is grain engine → block conv →
+  normalise conv → law → gain → clip. Both halves are load-bearing. Reading DC-carrying conv inflates
+  `envConv` and therefore the correction, which is the same reason D-013 put the blocker first; and
+  scaling before the law is what leaves the `p = ±1` endpoints bit-exact, because `coefWet` is exactly
+  zero there and `0 × finite = 0`. §5.5's criterion-3 leg and §5.10's gain ladder both re-verify that
+  identity with the stage installed (at amount 0, which is bit-exact unity) and both come back
+  bit-identical.
+* **Feed-forward, measured on the sample the stage has not yet scaled.** `processChannel` reads the hop
+  before it scales it in place, so `envConv` is the engine's own output level and the loop is open. The
+  alternative — the identical formula fed from the post-gain stream — is an AGC loop wrapped around a
+  follower, and it is one line of ordering away. A5 asserts the stage's conv reading bit-equals a bare
+  `LevelDetector` driven with the same stream while the correction runs, with a negative control: the
+  same detector fed the scaled stream reads differently.
+* **The gate runs before the arithmetic, on any of the three readings.** `gain = 1.0f` exactly when
+  `envA`, `envB` or `envConv` is at or below the floor. Because the gate runs first, everything downstream
+  works on readings strictly above it, so the geometric mean needs no per-reading clamp and the ratio no
+  divide guard — D-015's open "floor on the reading or on the mean" question dissolves. The consequence
+  to keep in view: the gate is a separate mechanism from the floor control, so a loud A over a floored B
+  yields unity, not the `√(envA · F)` boost a clamp-only design would apply.
+* **`amount` is an exponent, and the applied gain is a line across the hop.** `gain = (target/envConv)^amount`
+  so amount 0 is bit-exact unity at every sample and the dial meets the gate at the same value instead of
+  fighting it. The hop is then scaled along a straight line from the previous hop's gain with the **last
+  sample assigned**, not evaluated at progress 1.0 — the same float fact D-011 recorded, and the reason
+  an endpoint criterion can be met at all.
+* **A non-finite reading degrades to unity and is counted, not sanitised.** `LevelDetector` has no
+  non-finite rule and none was added: a NaN poisons its state, which is what its contract implies. The
+  stage checks the *computed* gain once per hop per channel; not finite ⇒ that hop's gain is `1.0f` and
+  `nonFiniteHops()` increments, mirroring `SoftClipper::nonFiniteSamples()` as a diagnostic nothing
+  synchronises on. The degradation is permanent for that stream and that is deliberate: unity and
+  uncorrected beats silence, NaN, or a per-sample `isfinite` on three streams. Nothing surfaces the
+  counter in the UI.
+
+**The values D-015 left open, and what each was derived against.**
+
+| Control | Value | Basis |
+|---|---|---|
+| Gain range | `[−36, +36]` dB | D-008's measured wet response peaks span 37.45 dB across the shipped L range, so ±36 dB covers it to within 1.45 dB and still leaves the ±2 dB gate reachable |
+| Slew limit | Stated as time: the full 72 dB range in **200 ms** (360 dB/s), realised as `360·H/sampleRate` dB per hop | A per-hop cap is INDEX §8.5's unit error in different clothing — it would be 8× slower in time at H = 512 than at H = 64, and the shipped hop set spans exactly that |
+| Detector τ | attack 20 ms, release 100 ms, all three buses | 20 ms matches the blend and gain ramps D-011 shipped; 100 ms is M3 §6's anti-pumping lean |
+| Amount dial | `[0, 1]` at `1/128`, **default 1.0** | The blend dial's dyadic quantum for the blend dial's reason (F-010). Default fully normalising, because the correction is the feature |
+| Floor dial | `[−90, −20]` dBFS at `0.125` dB, default `−60` | Dyadic step with both endpoints exactly expressible; 180 dB above `LevelDetector::envelopeFloor` = 1e-12, so the two silence rules cannot interact. Measured: the legacy preset leg loads it at exactly `-60` |
+
+**Measured.**
+
+* Target: held level equals the analytic `√(envA · envB)` to −2.4e-07 dB from a wet level 14 dB below it;
+  half-slope 0 / +6 / +6 / +12 dB for (baseline, A alone +12, B alone +12, both +12); amount 0.5 measured
+  6.9897 dB where the power form says 6.9897 and the linear form would say 9.54242.
+* Limits: cap 0.48 / 0.96 / 1.92 / 3.84 dB per hop at H = 64/128/256/512, with 72 dB crossed in
+  200 / 200 / 202.7 / 202.7 ms; unity again 434.7 ms after the input stops, against the detector's
+  published 2766 ms bound; NaN on any of the three streams counted every hop at unity while the clean
+  channel next door keeps correcting.
+* Chain: `latencySamples()` still one hop across the 28 (H, L) pairs; the delta anchor's arrival index
+  unchanged with the stage installed; the dial travel's click metric never exceeds the parked render's
+  (ratio 0.728512 … 1.0); automating either control every callback comes in at 0.575 and 0.906 of the
+  static render's click; zero allocations across the hop path with both controls moving.
+* Flatness: worst corrected deviation **0.376 dB** against the ±2 dB gate. The no-stage baseline spans
+  **9.5997 dB** across both tables; on the `L` axis at H = 512 the bare levels run −24.7915 to
+  −26.1815 dBFS, i.e. 1.39 dB, and the hop axis carries the work (9.16847 dB off at H = 64, L = 8192,
+  corrected to 0.376085).
+
+**Two findings that are documentation, not defects.**
+
+1. *The follower's crest bias cancels in the applied ratio, and only when the buses share ripple
+   content.* D-014's asymmetric follower reads a 1 kHz tone 7.8 % (+0.65 dB) high. All three buses are
+   read by the same class, so the bias cancels between `target` and `envConv` and the held level is the
+   analytic geometric mean — a rule column built from `envelope()` instead of from the amplitudes puts
+   that 0.65 dB on every rung and reads as a gain error that is not there. It does **not** cancel when
+   the three buses have different ripple content, which is what happens when one is much quieter than
+   the others; there it shows up as a level offset.
+2. *The L-spread on program material is not D-008's figure.* The 37.45 dB is a delta **response-peak**
+   span. The settled RMS across the same L range at fixed H spans **1.39 dB** (bare −24.7915 to
+   −26.1815 dBFS), and it is the hop half of `C = L/(2H)` that moves program level (9.17 dB at H = 64,
+   L = 8192). So §7's flatness criterion is
+   a much smaller ask than the response-peak number suggests, and the correction's visible work on
+   stationary material is correspondingly modest — while the peak figures D-009 and D-012 quote do move:
+   §5.7's shipped peaks are the with-the-stage numbers now, e.g. 2.53687 → 1.90372 for a correlated pair
+   at 0.4 amplitude.
+
+**Consequences worth naming.** Adding a third stage re-pointed two existing harness legs that modelled
+the shipped chain by hand (§5.5, §5.10) — F-011's other half, and the reason both now park the amount
+dial at 0 for the comparison rather than the harness growing a copy of the correction. Default amount 1
+changes what a fresh instance does, so every pre-item peak figure in this file is a without-the-stage
+number unless the leg says otherwise. And the floor gates on the *wet* reading too: at H = 64, L = 8192
+with −40 dBFS in, amount 0 and amount 1 render identically at the shipped −60 dBFS floor, and the stage
+asks for 26 dB once the floor moves to −90 — the dial decides where "nothing is amplified" is, which is
+exactly decision D's intent and the reason it is a control.
+
+**What the discriminator run proved, and what it did not.** All ten of the plan's §5 mutations were
+applied, built, run and reverted byte-verified (plan §14). Seven behaved as predicted. Three did not, and
+each of those three is worth more than the seven:
+
+* **The gate carries D-010's endpoint criterion, not just the noise one.** Deleting it did not merely
+  risk amplifying a floor: with exact silence the readings are finite (so the finiteness rule passes),
+  `log10(0)` reaches `−inf`, the difference of two infinities is NaN, and `0 × NaN` is NaN even where the
+  law's wet coefficient is exactly zero — so the clipper's non-finite rule turned the `p = −1` and
+  sidechain-disabled renders to **silence**. That is why the gate sits before the arithmetic rather than
+  as a clamp after it, and why the finiteness check is on the three readings rather than on the computed
+  gain: they are not the same test.
+* **The slew cap and the ±36 dB clamp have no chain-level witness.** Both mutations leave
+  `OfflineRender` bit-untouched and passing — the harness never drives a gesture fast enough for the cap
+  to bind, nor a wet level quiet enough to ask for the clamp. Those two figures are proved by the
+  `DspTests` cases that name them and by nothing else. Don't cite C5 or C8 for them.
+* **The blocker-before-the-stage ordering is untested, by anything in this repo.** Swapping the two
+  stages leaves every leg green: the blocker still removes DC before the output, so the DC leg cannot see
+  it, and the only consequence — a reading inflated by DC, hence a slightly wrong gain — sits far inside
+  the flatness gate. Naming this is the point: the invariant is real (it is why the stage sits where it
+  does) and it is held by one comment in `MixEngine::processHop` plus the builder's call order. Proving it
+  needs either a chain variant that swaps the two stages or a read-out of the applied gain through the
+  shell, and neither is worth building while the shell is being rewritten (AGENTS §13). The *other*
+  ordering claim is well covered: moving the stage past the law reddens seven harness legs, including the
+  bit-exact endpoints.
+  * **Closed 2026-11-02 by M4 item 07** (`../plan/M4-impl-plan/07-ordering-invariant-leg.md`), and neither
+    of the two escapes named above had to be built. The witness is a wet stub that puts a DC offset *under*
+    a 1 kHz tone: with the blocker in front, the stage's own conv reading sees the tone alone and the applied
+    gain is the tone ratio (**+7.95675 dB** measured against **7.9588 dB** analytic); with the loops swapped
+    the DC is inside the reading and the gain inverts to **−7.12531 dB**, a **15.08 dB** separation. One
+    `TEST_CASE`, "level stage runs after the DC blocker", reddens 662 assertions on the swap while
+    `OfflineRender` stays green — the blind spot this bullet describes. It also compares the stage's reading
+    hop-for-hop against a bare `LevelDetector` on the stage-free chain's output, which is what makes it an
+    ordering witness rather than a presence one: taking the filter out on both sides leaves that comparison
+    green and reddens the gain instead.
+
+**Revisit trigger.** Listening, as D-015 says: the geometric mean lets a quiet partner drag a channel
+toward the floor and out of correction, and the half-slope means the wet level follows each bus at 6 dB
+per 12 dB of it. Second: if pumping appears at the edges of silence, change the gate and add hysteresis,
+not the target. Third: if long-grain settings pump, scale `releaseMs` with L rather than touching the
+target — at the default L = 8192 the wet response itself spans 171 ms against a 100 ms release. A
+per-channel detector reset (the alternative to permanent-for-that-stream degradation) would change
+D-014's contract, so it is not assumed here.
+
+**Provenance.** Implemented 2026-10-31 from `plan/M3-impl-plan/04-level-normalizer.md`, whose §10–§12
+carry the per-criterion evidence trail including the three premise corrections the harness forced. The
+plan's §5 numbering and its §3 leg numbering conflicted; the assignment actually used is recorded in the
+plan's §10. Plan §14 carries the ten-mutation scorecard with its three negative results, and the close-out
+verification: `DspTests` 34 cases / 494 256 assertions (the normalizer's 10 cases, 2 303 of them),
+`MixEngineTests` 16 / 126 428, `ctest` **140/140** with `OfflineRender` green, `vstplug_VST3` linking at
+`-j4` in the same in-container `Release` tree.
+
+---
+
+## D-017 — The M4 channel rule: broadcast from one channel only, asymmetric rejected, ceiling 8
+
+**Status first.** Implemented and measured 2026-11-01 as `engine::ChannelMap` (`src/Engine/ChannelMap.hpp`,
+header-only) with `ChannelMapTests` — 12 cases, 1494 assertions, `ctest` **152/152** in the in-container
+aarch64 `Release` tree with `vstplug_VST3` linking at `-j4`. Nothing consumes it yet: item 03 will gate
+`isBusesLayoutSupported` on it and item 02 will turn its indices into pointers. Taken with the user in the
+`plan/M4-impl-plan/INDEX.md` §6 pass, which **replaced two of the plan's provisional answers** — §0 H's
+ceiling of 16 became 8, and §0 F's "output count must equal `max(chA, chB)`" became "at most".
+
+**One row of this entry is superseded.** The mono-main family is D-018's now, implemented by
+`plan/M4-impl-plan/09-map-consolidation.md` on 2026-11-02; that item re-ran the 729-triple sweep against the
+amended oracle and every other family resolved exactly as measured here (17 cases / 1 470 assertions,
+`ctest` 158/158). The 12 cases / 1 494 assertions below stay as the record of what D-017 shipped, with the
+broadcast row among them.
+
+**Context.** M4 §1 wants channels as independent convolutions with a mono side broadcast. Three of §3's
+four questions are answerable in code — the channel rule, the ceiling, and what an output count smaller
+than the source count means — and the fourth (the layout constraint, which hosts allow what) is item 08's.
+M4 §3 leaves "define what happens when `chA` and `chB` are both > 1 but different" open with a
+recommendation to restrict, and M4 §7's commutativity criterion reads as though the restriction follows
+from it. It does not (F-012), so the restriction is justified here on the ground that survives measurement.
+
+**The decision.**
+
+* **`N = max(chA, chB)`, and a side broadcasts its channel 0 exactly when it has one channel.** A side with
+  `ch > 1` maps output `c` to source `c`. No modulo, no wrap, no upmix.
+* **`chA > 1`, `chB > 1` and `chA != chB` is rejected** — `ChannelMapStatus::asymmetric`, which becomes a
+  `false` from `isBusesLayoutSupported` in item 03. The reason is **injectivity, not commutativity**: under
+  a modulo rule a 2-channel A against a 6-channel sidechain would feed A's channel 1 into outputs 1, 3 and
+  5, so M4 §7's independence criterion degenerates into "the same convolution, three times" and a source
+  channel is silently reused rather than mapped. Commutativity does not discriminate between the two rules
+  — measured, not reasoned: a modulo mapping swaps cleanly (`F-012`).
+* **`channelsOut` may be at most `max(chA, chB)`.** Fewer outputs select the leading channels — index `c`
+  of each side, or that side's channel 0 where it is mono — and drop the rest; more outputs is
+  `countMismatch`. Selection is not the downmix M4 §2 excludes: no output ever mixes two source channels,
+  each is still exactly one convolution of one pair. The accepted case is the milestone's own §6 row 4
+  (a mono main out with a stereo sidechain), which now resolves rather than being refused.
+  **Amended by D-018 for the mono-main family:** there the ceiling is 1, not `max(chA, chB)`, and what the
+  one output reads is not a selected channel but the fold of the whole sidechain. Every other family keeps
+  this rule exactly as written and item 09's sweep is measured against it.
+* **A missing sidechain is silence, and silence is not channel 0.** `chB == 0` puts `kSilentSource`
+  (`0xFFFF`) in every B slot. D-002's "no sidechain bus" and "mono sidechain" are different states and the
+  map carries both; the sentinel sits outside every real index range so an unhandled one fails as an
+  out-of-range index instead of aliasing the dry bus into the wet path. `chA == 0` has no such rescue: it
+  is `empty`, because A is the mandatory side.
+* **`kMaxChannels = 8`,** chosen over 16 in the §6 pass. Per-channel state below the seam is linear in `N`
+  — `MixEngine`'s scratch is `hop × N` floats (`MixEngine.cpp:51`) and the level stage owns three
+  window-length `LevelDetector`s per channel — so 16 doubles the footprint of *every* configuration,
+  including the ones no host asks for. 8 covers 7.1 first-order ambisonics and every layout the shell's
+  own buses can express. The map itself is 36 bytes at this ceiling and is asserted against the bound
+  written beside the constant. `resolve`'s `capacity` argument lets a caller ask for less and a test drive
+  the boundary without recompiling; a `capacity` above `kMaxChannels` is clamped to it rather than trusted.
+* **Rejection is a typed status, never an exception, in a fixed precedence:** empty → asymmetric →
+  exceedsCapacity → countMismatch. A layout gate needs the reason, not a bare `false`, and the precedence
+  means a triple that breaks several rules reports the most specific one and never fills what it is about
+  to reject. On every rejection the escaping map is value-initialised.
+* **One function owns all of it.** `isBusesLayoutSupported` and the pointer resolution will call
+  `ChannelMap::resolve`; neither may re-derive the rule (INDEX §3 rule 2). It lives in `Engine` because
+  `Engine` already carries `EngineConfig::maxChannels` and the scheduler whose silence-filling this
+  formalises, and because AGENTS §10 needs the exhaustive test to run as a console program — the shell is
+  JUCE and could not host it.
+
+**Finding that corrected the milestone's rationale (F-012).** M4 §3's implied argument — that a modulo rule
+would make swapping A and B produce different mappings — is false, and so is the item plan's prediction
+that a modulo implementation turns the commutativity leg red. Measured against the accepted set: with
+asymmetric pairs rejected and `channelsOut ≤ max(chA, chB)`, every filled slot satisfies `c < ch` for a
+multi-channel side, so `c % ch == c` and the modulo rule is *observationally identical* to the documented
+one — that mutation leaves all 12 cases green. What actually turns the mapping legs red is accepting the
+asymmetric case (criteria 1 and 2 and 4) and dropping the output-count check (1, 6 and 11). F-012 carries
+the three predictions that did not survive the run.
+
+**Revisit trigger.** A host that must be supported with an asymmetric layout (item 08's findings) does not
+buy an `#ifdef` — it buys a second status and a documented rule, decided in its own entry. If item 05's
+shared-spectrum path needs the broadcast signalled through the map, that is §6 row 5's entry, not an edit
+to this one. And if a mono main out over a stereo sidechain ever has to *fold* B's channels rather than
+drop B's channel 1, that is the downmix M4 §2 excludes and needs a decision of its own. **That trigger fired
+2026-11-02: D-018 took the fold.** The correction rather than the exception — M4 §2 now names that fold as
+its single exception, confined to one family, stated by a sentinel and computed above the seam, while the
+matrix- and spatial-shaped downmix this entry was ruling out stays out.
+
+**Evidence.** `plan/M4-impl-plan/01-channel-map-helper.md` §10 (per criterion, with command and date) and
+§5's mutation table with its measured column — six planned mutations plus two added to isolate the ones the
+predictions could not reach, each reverted byte-verified. The exhaustive leg sweeps all 729 triples of
+`{0,1,2,3,4,6,8,16,17}³` against a table restated from the header's own row list, and the shipped mappings
+(1,0), (2,0), (1,1), (2,1), (2,2), (1,2), (8,0), (8,8) and the past-the-ceiling (16,16) are pinned by
+`static_assert`, which is why four of the eight mutations are caught by the compiler rather than by a test
+run.
+
+---
+
+## D-018 — The mono-main case consolidates the sidechain to a mono mean; every other layout needs main ≥ sidechain
+
+**Status first.** Decided with the user 2026-11-02, closing `plan/M4-impl-plan/INDEX.md` §6 row 2, and
+**implemented the same day** by `plan/M4-impl-plan/09-map-consolidation.md`. `ChannelMap::resolve` folds the
+`chA == 1 && chB > 1` family now: one processed channel, and `kConsolidatedSource` (`0xFFFE`) in its B slot.
+The two things that pinned the retired rule pin this one — the `(1, 2)` `static_assert` in
+`src/Engine/tests/ChannelMapTests.cpp` reads `channels == 1` with the marker, and the exhaustive leg's
+oracle restates the fold. **The other half landed 2026-11-04**, when `plan/M4-impl-plan/02-broadcast-resolution.md`
+put the resolver in `HopScheduler`: the mean is computed there, above the `processHop` seam, and the level
+consequence recorded below is **measured** — and is not the figure this entry first asserted. Read the
+amendment below the bullet list before quoting either number.
+
+**Context.** The §6 question was which asymmetric bus shapes the layout gate allows, and M4 §3's reason for
+asking is that a plugin on a mono track cannot emit stereo. The answer first taken was "allow a mono main
+with a stereo sidechain and make the output stereo", which requires `mainOut != mainIn` — a shape the shell
+rejects outright at `src/Entangle/EntangleProcessor.cpp:137` and one M4 §3 says most hosts will not route.
+Shown that consequence, the user replaced the answer rather than defending it: the output stays mono and the
+sidechain is folded to the mean of its channels. The rule is therefore keyed to the **main bus shape**, not
+to symmetry between the two sides, and no exotic bus shape is ever requested — which is what makes the rule
+implementable without item 08's host research being a precondition.
+
+**The decision.**
+
+* **`chA == 1 && chB > 1` → one processed channel, mono output, and the sidechain source is the arithmetic
+  mean `(1 / chB) · Σ_c B[c]`.** Not channel 0 (that throws away `chB − 1` channels of the sidechain's
+  content), and not D-017's broadcast to `chB` outputs (that asks the track for a wider output bus than it
+  has). Cheaper than the rule it replaces: one convolution per hop instead of `chB`.
+* **Every other accepted layout keeps `chB <= chA`, and the shell keeps `mainOut == mainIn`.** So the
+  existing main-bus equality guard stays, `isBusesLayoutSupported` never has to admit unequal main buses,
+  and item 08 shrinks from "can we emit stereo from a mono track" to "which hosts offer a sidechain bus
+  wider than mono at all, and can it be enabled independently".
+* **Arithmetic mean, not a power mean and not a −3 dB-compensated sum.** Figures for the record, from the
+  definition: two equal-level uncorrelated channels fold to −3.01 dB, a coherent identical pair keeps its
+  level exactly, and an antiphase pair folds to silence — which reaches `LevelNormalizer`'s floor gate and
+  leaves the wet path at unity rather than boosting a folded-to-nothing sidechain.
+* **The fold is the one documented exception to "channels never read each other's samples" (M4 §5), and it
+  lives above the seam.** The resolver computes the mean into a mono hop and hands the engine one B pointer,
+  so nothing in `Engine`, `Dsp`, `Fft` or `Grain` gains a cross-channel read and INDEX §3 rule 3 is intact.
+  M4 §7's independence criterion is stated over mapped sources with this fold named as the exception.
+* **What survives of D-017 unchanged:** the ceiling of 8, the asymmetric rejection, `kSilentSource` and
+  D-002's "no sidechain is not mono sidechain", the typed status precedence, and the one-function ownership.
+  Only the mono-main row changes shape: that family's allowed output count becomes exactly 1, so
+  `channelsOut > 1` there must be a rejection rather than a map.
+* **The amended contract cannot ride on the index arrays alone.** `resolve(1, 2, 1)` is byte-identical under
+  both rules — broadcast-channel-0 and consolidate-to-mean both leave `a[0] = 0`, `b[0] = 0` — so a test
+  aimed at the old shape would not notice the change. Item 09 carries the fold as something the map states:
+  `kConsolidatedSource` in the affected B slot, a sentinel rather than a flag beside the arrays — a flag
+  gives a caller two sources of truth to read in either order, and a `bool` member takes `ChannelMap` past
+  the 36-byte bound its own `static_assert` pins (measured 2026-11-02: the field makes it 40 bytes and the
+  build fails). The leg that owns the marker compares it against `0` *and* against `kSilentSource`, so it
+  cannot co-mutate with the constant the way a leg that only compares against it does (F-012's failure,
+  reproduced and this time caught: setting `kConsolidatedSource = kSilentSource` leaves the swept table
+  green and reddens three legs that compare two resolves).
+* **Level consequence, arithmetic from D-016's formula and not measured:** a −3 dB fold drops `envB`, and
+  `wantedDb` weights `10 · log10(envB)` once, so the level stage's target moves −3 dB at `amount` = 1 for
+  uncorrelated sidechain material. Written down so a later listening note does not attribute it to the
+  follower's time constants. **This sentence is wrong in both its number and its sign — see the amendment
+  below.**
+
+**Amended 2026-11-04 by item 02, which measured the half this entry could only assert.** `HopScheduler` now
+resolves the map into pointers and computes the fold: `HopScheduler::foldSidechain` sums the `chB` sidechain
+sources once per hop into one pre-allocated mono buffer, the reciprocal applied once after the sum, every
+consolidated slot pointing at that buffer. Value legs are bit-exact at `chB` ∈ {2, 3, 4, 8} over four input
+patterns, an even-width antiphase pair folding to exact zeros, and the hop path does not allocate.
+
+The measured level consequence is **not** the paragraph above. Through the shipped builder, mono main,
+decorrelated stereo sidechain folded against channel 0 of the same pair, dial centred, `amount` = 1
+(`OfflineRender` §5.17, Release, Linux aarch64, RMS over the last second of 3 s):
+
+| Reading | Folded vs a mono sidechain |
+|---|---|
+| wet path with the level stage parked at `amount` = 0 | **−2.985 dB** — the −3.01 dB arithmetic, confirmed |
+| the correction the stage applies | −0.117 dB on a mono side, **+1.441 dB** folded → **+1.558 dB** |
+| corrected output | **−1.427 dB** |
+
+So the fold does drop the side 3 dB, and the *target* moves **+1.56 dB in the opposite direction**, not
+−3 dB. Two reasons, both structural: `wantedDb` consumes `√(envA · envB)`, so halving `envB`'s power is
+−1.5 dB rather than −3; and `envConv` — the engine's own convolved output level, which the stage divides
+against — falls with the fold, so part of what the side loses the output has already given back. The
+sentence stands above unedited because this log records what was believed when the decision was taken; a
+later reader should take the figure from this paragraph, and M9 row 2 should judge *this* delta's audibility
+rather than the one that was predicted.
+
+**Revisit trigger.** An item 08 finding that a host will not enable a wider-than-mono sidechain bus
+independently of the main bus; the M9 listening pass deciding the fold is audible (antiphase cancellation,
+the 3 dB drop, or a preference for a channel-0 or power-mean fold — all three are M9 rows, not edits here);
+or a surround main bus, where per-channel broadcast and consolidation would compete for the same family.
+
+**Evidence.** The map half is measured 2026-11-02 in `plan/M4-impl-plan/09-map-consolidation.md` §10:
+`ChannelMapTests` 17 cases / 1 470 assertions, `ctest` **158/158**, the plugin relinked at `-j4`, and nine
+mutation arms with their measured column in that file's §5. The mean half is measured 2026-11-04 in
+`plan/M4-impl-plan/02-broadcast-resolution.md` §10 — bit-exact fold legs at four side widths, the pointer
+resolution, its no-allocation leg, the ASan/UBSan sweep that **F-014** required, and the §5.17 figures in the
+amendment above; `ctest` **166/166** from that change. What stays unmeasured is the half a console cannot
+reach: whether any of it is audible (M9 row 2).
+`plan/M4-impl-plan/01-channel-map-helper.md` §10 (729 triples, 1 494 assertions, `ctest` 152/152, 2026-11-01)
+stands as the record of the rule that shipped before this amendment, not as evidence for this one.
+
+---
+
+## D-019 — Shared-spectrum optimisation: not in the engine API now, because the seam already fits M7
+
+**Status first.** Decided with the user 2026-11-02, closing §6 row 5. No code change. M4 §4 item 6 closes as
+"not now" and `plan/M4-impl-plan/INDEX.md`'s item 05 loses its reason to exist in this milestone; the row
+moves to M7, which is where a cost figure for it would come from.
+
+**Context.** M4 §3 asks this early so M7 does not have to break the seam to get the optimisation in. The two
+signalling routes M4 §5 names are pointer equality and an explicit flag, and the §6 pass put a third shape on
+the table — a prepare-time flag, which leaves `processHop` alone but puts layout-derived state below the
+seam.
+
+**The decision.**
+
+* **Nothing is added to `EngineConfig` or `processHop`.** Both eventual routes are additive, which is the
+  whole answer to "so M7 doesn't have to break it": pointer equality needs no signature at all, and
+  `EngineConfig` is a plain aggregate taken by const reference with every engine built from source, so a new
+  field is not a break at any call site. Neither route touches `processHop`'s four arguments.
+* **The flag now was the option not taken.** It would put layout-derived state below the seam, against INDEX
+  §3 rule 3, and every engine would carry a flag it does not use in exchange for an optimisation nobody has
+  measured a need for. F-007's cost data is per-callback, not per-channel, so this repo has no figure for
+  what an N× broadcast transform actually costs — M7 produces that curve and re-opens this with a number
+  rather than a hunch.
+* **Pointer equality is the route M7 should expect to take**, and its failure mode is the reason it is safe
+  to leave unimplemented: a shared spectrum must be bit-identical to computing the same hop twice, so a
+  caller whose buffers stop aliasing loses the optimisation and nothing else. Wrong audio is not reachable
+  through it. The cost it does carry is that performance becomes dependent on the caller's buffer policy, so
+  whoever implements it has to assert the aliasing rather than assume it.
+* **What is being paid for the deferral, stated plainly:** a broadcast configuration does `N` transforms per
+  hop where a shared spectrum would do one, and a consolidated mono main pays one cross-channel fold per hop
+  (D-018) above the seam. No harness here measures either figure.
+
+**Revisit trigger.** M7's per-channel cost curve; or any implementation in which a shared spectrum is not
+bit-identical to the recomputed one, which would make it a behaviour change needing its own entry.
+
+**Evidence.** Decision only. The seam facts it rests on are in the tree: `Engine::processHop` takes
+`const float* const*` for both sides (`src/Engine/Engine.hpp:49-50`), and `EngineConfig`
+(`src/Engine/Engine.hpp:6-13`) is an aggregate with no private state.
+
+---
+
+## D-020 — Independent per-channel normalisation stays; the linking question moves to M9 behind a measurement
+
+**Status first.** Decided with the user 2026-11-02, §6 row 6. No code change — M3's per-channel behaviour
+ships. The row does **not** close: it is a listening call, and INDEX §3 rule 4 says a host-only criterion
+never counts as measured. It moves to `plan/M9-preference-tweaks.md` with a measurement placed in front of it.
+
+**Context.** `dsp::LevelNormalizer` decides per channel: `gain = (√(envA · envB) / envConv) ^ amount`, with
+the floor gate evaluated per channel too. So a hard-panned or level-asymmetric stereo pair receives different
+gain on each channel, and a channel that falls below the −60 dB floor sits at unity while its partner moves by
+up to ±36 dB. That is image steering, and it is the whole reason M4 §6 asks for a linked option.
+
+**The decision.** No linked mode, no new parameter, and no rule written from the mechanism alone. What ships
+is what M3 measured. Before any future linking decision there is to be a figure: the inter-channel gain delta
+the level stage produces on decorrelated stereo, per shipped hop, so the choice is made against a measurement
+rather than against a plausible-sounding failure mode. A console harness can produce that delta — it cannot
+decide whether it is audible, which is the part that stays with the user's host and a named DAW and version.
+
+**Revisit trigger.** M9's measurement, or the user's listen. Either way the entry that changes this one has
+to name the delta it was decided against.
+
+**Evidence.** Decision only. The per-channel mechanism is in `src/Dsp/LevelNormalizer.hpp` (`processChannel`
+takes a channel index and touches that channel's state alone) and its measured settling behaviour is D-016's.
+
+---
+
+## D-021 — The layout gate: two rules of its own above `resolve`, main bus mono/stereo, sidechain to 8
+
+**Status first.** Decided with the user 2026-11-04, in three parts (A the widths, B the wide-main deferral,
+C the reason carried by every refusal), and **implemented and measured the same day** by
+`plan/M4-impl-plan/03-layout-negotiation.md` as `engine::gateLayout` (`src/Engine/LayoutGate.hpp`,
+header-only, `constexpr`, JUCE-light) with `LayoutGateTests` — 9 cases / 9 125 assertions, its own binary for
+the allocation leg. `ctest` **166 → 175**, green; `vstplug_VST3` relinked; `OfflineRender` §5.18 added (192
+layouts probed through the public `checkBusesLayoutSupported`, 0 host/gate disagreements). This closes the gap
+`AGENTS.md` §13 carried — "a layout the rule rejects is currently met with silence rather than a clean
+refusal" — and makes the D-018 fold reachable from a host for the first time.
+
+**Context.** Until now `isBusesLayoutSupported` was three hand-written guards — `mainIn == mainOut`, main
+mono-or-stereo, sidechain mono-or-stereo — that never cross-checked the two buses and never called
+`ChannelMap::resolve`. The rule therefore lived twice: once as prose-shaped code in the shell, once in the map.
+Measured against the 12 shapes the old gate could see, its answers were already rule-correct, so this is a
+derivation change plus a widening, not a bug fix. The widening is what makes it a decision: `resolve` has
+folded a mono main over a wide sidechain since D-018 and `HopScheduler` has computed that mean since item 02,
+but **the plugin itself refused a wider-than-stereo sidechain**, so the design's one cross-channel read was
+unreachable from any host — not because a host declined to offer it, but because our own gate did.
+
+**The decision.**
+
+* **A — the widths (the user's call).** The main bus stays **mono or stereo**; the sidechain bus may be **up to
+  `kMaxChannels` (8)**. A wide main is refused with a verdict of its own (`mainWidth`) so it is never confused
+  with a channel-rule rejection. Measured consequence: the accepted set gains `(1, chB 2…8, 1)` — §5.18 finds
+  8 newly reachable layout combinations among 192 probed — and the refusals get real cases: a stereo main with
+  a 5.1 send is now refused `asymmetric`, a nameable refusal where the old code had a rule that did not know
+  to look. Processed count stays ≤ 2, so nothing below the seam grows.
+* **B — the wide main is deferred, not rejected on principle (the user's call).** 8-wide mains (quad, 5.1, 7.1
+  — all of which `resolve` takes today) wait on three things this item does not own: item 04's prepare-time
+  allocation figures, M7's per-channel cost curve (F-007 is per-callback, and D-019 deferred on exactly that
+  absence), and M4 §6's open question about how JUCE reports surround and ambisonic buses. It is a named
+  revisit trigger rather than an implicit line, and `kMaxMainBusChannels` is the single constant that changes
+  when those figures exist — so a later item does not read the 2 as a rule of the design.
+* **C — a refusal names its reason (the user's call).** `LayoutDecision` carries `verdict` (accepted /
+  mainWidth / mainCountMismatch / channelRule), `rule` (the map's `ChannelMapStatus` **kept verbatim on every
+  path**, including refusals the map did not cause) and `processed`. No fifth status was invented for the
+  wide-main case — item 09 §0 E's reasoning extends: a status that fires in one family is where precedence
+  bugs hide, and the wide-main refusal is not the map's to make.
+* **One derivation, and `resolve` is consulted on every path** so a refusal always carries what the map
+  thought, even when the verdict came from the width or the count: `(9, 9, 9)` is `mainWidth` whose `rule`
+  still reads `exceedsCapacity`, and a leg asserts exactly that. The gate is compared against `resolve` and
+  never against a sentence about it, because the sentence — `chB <= chA`, except the mono-main family — is a
+  *necessary condition* that over-admits by **22 gate-visible triples**: 21 `asymmetric` pairs (`(3, 2, 3)`
+  through `(8, 7, 8)`) plus `(1, 9, 1)` past the ceiling. D-018's own bullet says `chB <= chA` is what accepted
+  layouts keep; it was never a decision procedure, and two index rows stated it as one.
+* **Two callers of `resolve`, one decider.** `gateLayout` and `entangle::makeSchedulerConfig`
+  (`src/Entangle/EngineChain.h`) both call the pure function, as does `tools/CpuBaseline.cpp`. Rule 2 forbids a
+  second place that *decides*, not a second call; collapsing them into one call would thread the host-facing
+  check into `prepareToPlay`, where the live buses are authoritative and can differ from the layout the host
+  last asked about. §5.18 pins the two answers equal on the live triple (gate's `processed` 1, map's
+  `channels` 1, one output channel offered).
+* **`configureRings` takes `activeChannels` from the gate's `processed`**, not from a bare `resolve`. Its
+  early return on `activeChannels <= 0` stays — `processBlock` must be total (§7) — but it is now unreachable
+  from a layout a host can apply, which §5.18 measures by driving a callback whose buffers start as NaN: 0
+  unwritten output samples on every accepted layout. That is the difference between "silence is the honest
+  response for now" and "a refusal is what a host gets".
+
+**Revisit trigger.** Wide mains: item 04's allocation figures **and** a per-channel cost curve **and** an
+answer to how JUCE reports surround buses (M4 §6, and 08's host answers). The `asymmetric` rejection is
+D-017's revisit trigger, not this entry's — admitting that family is a `resolve` change with an entry of its
+own, never a gate edit. If no target DAW exposes a wider-than-mono sidechain (08's question), A buys a
+reachable refusal and no reachable fold; that changes nothing about the rule, which should still be able to
+say *why*.
+
+**Evidence.** `src/Engine/LayoutGate.hpp` (the table, the ladder order, the 12-byte pin and the eight verdict
+pins — six legacy shapes plus the two endpoints of the new family; item 09's F-012 lesson kept the pin set
+small so the swept legs stay load-bearing). `LayoutGateTests`: the 12 legacy shapes with their exact verdict,
+`rule` and `processed`; the `[0,12]³` derivation sweep (2 197 triples, `rule == resolve`'s status on every
+path, 12 accepted); `mainOut == mainIn` including the leading selections `resolve` takes; the newly reachable
+family; one leg per refusal family; the paraphrase's 22 over-admissions asserted as failures. `OfflineRender`
+§5.18: the host-vs-gate sweep; 10 refusals applying nothing; the per-bus substitution table (F-015); the
+advertisement (main 2 unchanged; sidechain 8 beside a mono main, 2 beside a stereo one); the naming sweep (94
+`AudioChannelSet`s, 0 split by naming — the gate-level answer to M4 §6's ambisonic bullet); the inventory (2
+in / 1 out, a third bus refused before the gate is asked); the table identical before and after
+`prepareToPlay` and after a mid-session layout change; the footprint of the new shape (B-side rings plus hop
+scratch: 65 KiB at `chB` = 2 → **260 KiB** at `chB` = 8, H = 128, `maxHostBlockSamples` 4096 — recorded, not
+bounded; item 04 owns the ceiling); and the newly reachable family rendering as the fold — shell bit-identical
+to the shared builder, differing from both single-channel references (peak Δ 0.183 and 0.177), and −2.985 dB /
+−3.020 dB against them with the stage parked: §5.17's arithmetic, now reached through a layout a host can
+actually select. **Twelve §5 mutation arms were run** (the eleven planned plus a 4b that disables the two family
+pins so the runtime legs they shadow are exercised): results in that plan's §10, and the eight places the plan's
+own predictions needed correcting in its §11 — including one arm (5) that is an equivalent mutant, with the
+structural reason.
+
+**Disclosed, not fixed.** D-018's antiphase cancellation is now field-reachable: a wide sidechain fed an
+antiphase pair folds to exact zeros, falls through `LevelNormalizer`'s floor gate and leaves the wet path at
+unity — quiet, uncorrected, no error anywhere. Before this item a host could not select it; after, it is a
+layout choice with no control and no console answer. Judged by M9 row 2, per M4 §8.
+
+**Annotated 2026-11-05, at B's first dependency.** Item 04 landed, so the wide-main deferral has its allocation
+figures: D-022 C's tables put a stereo layout at 1.02 MiB and the 8-wide fold at 1.02 MiB with the default grain
+length, and name the axis that actually costs — a wide **main**, where `processed == chA` multiplies every engine
+buffer, which is exactly the family this entry refuses. A per-channel cost curve (M7) and M4 §6's surround-bus
+question are the two triggers still outstanding, so the deferral stands.
+
+---
+
+## D-022 — Prepare-time sizing: a floor with a name, a re-prepare keyed on seven fields, and a footprint measured rather than bounded
+
+**Status first.** Decided with the user 2026-11-04 in three parts (A the floor, B the conditional re-prepare, C the
+recorded footprint) and **implemented and measured 2026-11-05** by `plan/M4-impl-plan/04-allocation-and-reprepare.md`
+as `engine::ReconfigureKey` (`src/Engine/ReconfigureKey.hpp`, header-only, `constexpr` comparable, JUCE-light) with
+`ReconfigureTests` — 14 cases / 182 assertions, its own binary for the allocation leg — plus
+`EntangleAudioProcessor::maxHostBlockFor`, `OfflineRender` §5.19 and `tools/PrepareFootprint`. `ctest`
+**175 → 189**, green; `vstplug_VST3` and `vstplug_Standalone` relinked; ASan/UBSan clean on the new suite. This
+discharges the first of D-021 B's three dependencies and retires M4 §8's allocation-risk row.
+
+**Context.** Two half-said things. `configureRings` sized every ring against `std::max(samplesPerBlock,
+maxHostBlockSamples)` — a floor in fact, with nothing at the site saying so, and two more copies of the same
+`std::max` loose in the harness — and it re-prepared on **every** arrival: `prepareToPlay`, `processorLayoutsChanged`,
+and the hop and grain dials through `handleAsyncUpdate`. A host that re-applies an unchanged layout therefore cleared
+the rings, re-prepared the engine — which rebuilds the JUCE transform — and re-applied the latency pre-fill, dropping
+R samples of a running transport. F-001 records that some hosts re-query and re-prepare without meaning anything by
+it. Meanwhile item 03's §5.18 printed the footprint of the shape it had just made reachable by re-evaluating the
+scheduler's own expression (F-016), and the number that reached `AGENTS.md` §13 — 65 KiB at `chB` = 2 → 260 KiB at
+`chB` = 8 — was the B-side slice of a total nobody had measured.
+
+**The decision.**
+
+* **A — `maxHostBlockSamples = 4096` stays a floor, and becomes a named function (the user's call).**
+  `maxHostBlockFor(hostBlock)` is the one place the policy lives: the shell's `configureRings` calls it, §5.19 sweeps
+  it, and the harness's two `ChainConfig`s call it instead of recomputing it. Measured consequence
+  (`PrepareFootprint` [1], §5.19's sweep through the same function): every ring is `nextPow2(4096 + H)` =
+  **8192 floats = 32 KiB at every hop the UI can select**, for every host block up to 4096 — a host running 64-sample
+  callbacks pays the same 32 KiB as one running 4096, and the ceiling triple pays ~320 KiB of rings where the delay
+  lines it exists to serve need ~13 KiB. Above the floor the host's number reaches the sizing and the rounding step
+  shows: 4097 → 8192 f, 8192 → 16 384 f, 65 536 → 131 072 f. What the floor buys is that the sizing does not depend
+  on host behaviour at all, so a callback larger than the prepared block trips
+  `assert(numSamples <= config.maxHostBlock)` in an assert build instead of degrading — as it does in a Release host
+  — to a short `CircularBuffer::write` and a hole in the output. Recorded with the trade, not as a preference:
+  sizing to the prepared block would cut a 512-sample host's rings to 4 KiB each and trade that tripwire away. One
+  consequence nobody had stated: `nextPow2(hostBlock + hop) > hostBlock` for every hop ≥ 1, so **the assert cannot
+  fire on host behaviour as the sizing stands** — it is a regression tripwire on the sizing expression, which is
+  precisely what §5 arm 8 reproduces.
+* **B — the re-prepare is conditional on a seven-field configuration key (the user's call).** `sampleRate`,
+  `hostBlock` (as prepared, before A), `chA`, `chB` (`0` = the sidechain bus is absent, so it carries D-002's enabled
+  bit), `chOut`, `hop`, and `grainLength` **after the clamp**. Consequence of the change: a host that re-applies the
+  unchanged layout stops dropping the tail and stops rebuilding the transform, and a dial move the clamp swallows
+  stops re-preparing at all. Measured: the second prepare with an unchanged key allocates **0 bytes** (printed for
+  five layouts in `PrepareFootprint` [5]) and a mid-render `setBusesLayout` + `processorLayoutsChanged` +
+  `prepareToPlay` carrying the layout already in force leaves a running transport bit-identical (§5.19). Consequence
+  of *how*: the key must be exactly right, so all seven fields are swept one at a time and each must still produce a
+  re-prepare — a missed dimension is a real change silently ignored. Post-clamp `L` is a field, which is what makes
+  32768 → 65536 at H = 256 a no-op (ceiling 32768, render bit-identical) and the same move at H = 512 a real
+  re-prepare (peak Δ 0.212).
+* **C — the footprint is measured, documented, and never asserted (the user's call).** No test holds a byte limit.
+  `tools/PrepareFootprint` counts live bytes through a replaced global `operator new` over regions that build the
+  real thing, prints host, compiler, build type and assert state on its first line, and is deliberately not in CTest
+  on `CpuBaseline`'s stated grounds. Consequence accepted: a later sizing change drifts the documented figure
+  instead of reddening a test, and running that tool is what re-establishes it. What *is* asserted is behaviour, not
+  bytes: a narrowing gives back exactly the ring storage it no longer needs (C2) and the first callback after a
+  re-prepare allocates nothing (C8).
+
+**The figures** (2026-11-05; Linux aarch64, gcc 13.3, Release with `-flto`, `ENTANGLE_ASSERTS=ON`, `fft::JuceFft`):
+
+| triple | scheduler alone, H = 128 | whole chain, default L = 8192 | whole chain, L = 65536 (H = 512 only) |
+|---|---|---|---|
+| `(1, 0, 1)` mono | 81.6 KiB | 760.7 KiB | 5 488.7 KiB |
+| `(2, 2, 2)` stereo | 211.9 KiB | 1 024.4 KiB | 6 669.4 KiB |
+| `(1, 8, 1)` the gate's ceiling | 342.1 KiB | 1 021.2 KiB | 5 761.2 KiB |
+
+Four things item 03's B-side slice could not say. **The wet path dwarfs the scheduler**: 10.5F + 6 floats at one
+processed channel and 12.5F + 6 at two, measured 7.1 KiB mono / 12.5 KiB stereo above those figures at the default
+grain length and 26.6 / 47.0 KiB at the cap — `juce::dsp::FFT`'s own tables, named as excluded rather than folded in,
+because the backend is chosen at runtime (vDSP, IPP, MKL, FFTW, or the fallback). **An 8-wide sidechain is not the
+expensive shape**: consolidation processes one channel, so the ceiling triple pays +130 KiB of scheduler and saves
+133 KiB of engine beside stereo — 1021.2 against 1024.4 KiB, a net wash. The axis that costs is the one the gate
+still refuses, where `processed == chA` multiplies every engine buffer. And the shell is 265 KiB before any prepare,
+so what the guard of B skips per redundant arrival is 761–1024 KiB of churn plus a transform rebuild, against a real
+hop change's 8–15 KiB net.
+
+**Revisit trigger.** Wide mains, per D-021 B — the table above is the input that was missing, and the two triggers
+that remain are M7's per-channel cost curve and M4 §6's surround-bus answer. Separately: **memory follows the widest
+configuration a session has seen**, because `assign` and `clear` keep capacity — measured at the ceiling and H = 256,
+a narrowing gives back exactly 224 KiB of ring storage and keeps 7.0 KiB of hop scratch plus 0.4 KiB of ring-object
+array. That is the deliberate price of a callback that never grows anything; it becomes a problem only against a host
+that flaps between wide and narrow layouts, and the fix then is to release capacity at prepare, never a second
+decider (INDEX §3 rule 2).
+
+**Evidence.** `src/Engine/ReconfigureKey.hpp` (the seven fields, the 32-byte size pin, the never-matches-a-real-
+configuration pin). `ReconfigureTests`: seven one-field sweeps each with the control that proves the comparison is
+not vacuous, the equality and initial-key legs, a refusal clearing the key, prepare sizing by source in and processed
+out, the narrowing's exact release, hop scratch keeping its capacity, and a zero-allocation callback after a
+re-prepare — all against a byte model that matched the allocator exactly on the first run. 14 cases / 182 assertions,
+clean under ASan/UBSan; `EngineTests` was run there by case-name subset (9 cases / 90 365 assertions) rather than
+whole, the whole suite exceeding the sanitizer run's time budget at `-O0`. `OfflineRender` §5.19: the
+C12 floor sweep through `maxHostBlockFor`, latency == hop over 20 layout × hop preparations plus a dial walk, a fresh
+instance's first callback (0 unwritten samples, peak 1.36), mid-session `(2,2,2) ⇄ (1,8,1)` bit-exact against an
+instance prepared at the destination, the unchanged-layout re-apply bit-exact against an undisturbed control, the
+clamp-swallowed dial move, 28 `(H, L)` pairs through the engine's own guard band, and a refused quadraphonic request
+applying nothing across two re-configures. `tools/PrepareFootprint`: the five tables quoted above. **The eleven §5
+mutation arms ran**: ten caught, arm 10 the predicted equivalent mutant, arm 8 caught under the sanitizer tree only
+(`heap-buffer-overflow` in `CircularBuffer::copyOut` at `(1, 8, 1)` — F-014's signature reproduced on demand), and
+arm 11's tripwire finding a real bug in the guard this decision ships. Outcomes, and the eleven places this plan's own
+premises needed correcting, are in that plan's §10 and §11.
+
+---
+
+## D-023 — The layout report: one line naming what the plugin was told, built at the tail of a real prepare
+
+**Status first.** Decided 2026-11-06 in `plan/M4-impl-plan/08-host-layout-matrix.md` §0 B/C/D and **implemented and
+measured 2026-11-08** as `EntangleAudioProcessor::layoutReport()` with `refreshLayoutReport` behind it, the editor's
+`layoutReadout` label, and `OfflineRender` **§5.21** (28 lines, 0 FAIL; 26 report lines reach the installed logger).
+`ctest` stays **189/189** — §5.21 lives inside `OfflineRender`, so no test is registered — and `vstplug_VST3` plus
+`vstplug_Standalone` relinked at `-j4`. **The rows this instrument exists to answer are open**: H0–H8 in
+`docs/host-layout-matrix.md` are all unanswered, because no host has loaded this plugin and INDEX §3 rule 4 will not
+let a container answer one. What landed is the ability to answer them with a pasted line rather than an impression.
+
+**Context.** Every layout claim in D-017, D-018 and D-021 was measured in a console against JUCE's own
+`checkBusesLayoutSupported`/`setBusesLayout` paths, and item 03 read the VST3 wrapper rather than running it. M4 §6's
+questions — which hosts expose a sidechain send wider than mono, whether it can be enabled independently of the main
+bus, what a refused layout does in the wild, how JUCE reports surround and ambisonic buses — cannot be answered that
+way, and F-015 already showed why the host's own labels are not evidence: this plugin advertises 8 sidechain channels
+beside a mono main and 2 beside a stereo one, because the advertisement is computed *from the gate*. A report exists
+so the answer is what the plugin was **told**, at the moment it was told.
+
+**The decision.**
+
+* **A — one function, one place, describing a configuration that was actually built.** `layoutReport()` returns a
+  `juce::String` assembled by `refreshLayoutReport`, which is called from the tail of `configureRings`: after the
+  `gateLayout` call, after the cached `activeChannels`/`sidechainActive` members, and **after** the D-022 B guard's
+  early return. Ordering is the decision, not the style — an instrument fed by an arrival that was skipped describes
+  a rebuild that did not happen, and §5 arm 2 (moving the call above the guard) reddens twelve C1 lines, C2's
+  first-prepare leg, three C3 refusal legs and C4's one-line leg because a prepare counter that counts pokes cannot
+  distinguish those cases any more.
+* **B — the field set, and the two counters.** Bus inventory (`inBuses`/`outBuses`), live counts and
+  `AudioChannelSet::getDescription()` verbatim for the three buses plus each bus's `isEnabled()` flag, the gate's
+  `verdict/rule`, `processed`, `getTotalNumOutputChannels()`, rate, hop, requested and running grain length, the
+  declared latency, `hostBlock/maxHostBlockFor(hostBlock)`, `sidechainActive`, `effectiveBlendPosition()`, and
+  `prepares=`/`skipped=`. The names are the point of P5 and of D-021 B's third trigger, which is why arm 1 (names
+  replaced by an empty string) reddens three fields on every one of the twelve accepted triples rather than one
+  leg. **Deviation from the plan, and it matters:** the two counters are formatted where the line is *read*, not
+  where its body was built. A declined arrival never reaches `refreshLayoutReport`, so counters frozen into the body
+  could never show a skip — and "a skipped arrival proves the guard ran" (D-022 B's only outside view, P6's whole
+  question) would have been invisible until the next real prepare. Configuration fields still describe the last real
+  prepare; only the prefix moves.
+* **C — two deliveries, both message-thread, neither on the audio path.** The editor's `layoutReadout` label, fed
+  from the existing 100 ms tick beside `blendReadout` and `grainReadout`, with the whole line in the label's tooltip
+  because the label cannot hold it and the editor is mid-rewrite (AGENTS §12). And `juce::Logger::writeToLog` once per
+  real prepare, behind `MessageManager::existsAndIsCurrentThread()`. The guard is not tidiness: `writeToLog` reaches
+  stdout or `NSLog`, which can block, and hosts call `prepareToPlay` from threads of their own choosing. Measured
+  consequence, and the reason the console legs are written the way they are: `MessageManager`'s constructor records
+  *its own* thread (F-018), so a harness that calls `initialiseJuce_GUI()` satisfies the guard on `main()` and logs
+  every prepare; only a genuinely different thread is silenced, which is what §5.21 C5 tests by forking one. In a real
+  VST3 host the wrapper designates its own thread, so whether the line ever appears in a host's log is H0, and if it
+  never does, the readout becomes the delivery and this entry is amended.
+* **D — a lock, and a value, because prepare has no fixed thread.** The body and counters sit behind a
+  `mutable juce::CriticalSection` and the getter returns by value. `prepareToPlay` may run on a thread the editor is
+  not on, and a `juce::String` assigned under a reader is a crash, not a cosmetic race. Nothing here is reachable
+  from `processBlock`: the callback reads no logger, no lock and no string, and C7's grep still returns nothing.
+
+**Rejected.** Writing a file from the plugin (a host-specific user-data path, a privacy question nobody asked it, and
+a console harness that would need an env var to reach it — splitting the code path the tests run from the one the host
+runs); an env-var-gated diagnostic (same split, plus a mechanism with one user); the host's own meter as the
+instrument (P8 keeps one audible probe precisely because it needs no code, but it answers one question, qualitatively).
+
+**Revisit trigger.** The log delivery goes away and the readout is the only carrier if a named host never shows the
+line (H0). The whole instrument relocates with the editor rewrite AGENTS §12 anticipates — it follows an existing
+readout pattern rather than inventing one, so it moves with the pattern. If a future path changes the configuration
+without going through `configureRings`, the line becomes a lie; the counters are the tripwire and C1's
+field-by-field comparison against the accessors is the leg that reddens it.
+
+**Evidence.** `OfflineRender` §5.21, all 28 lines green: 12 triples × 24 fields against accessors and
+`gateLayout` (0 wrong each); the pinned naming table for eleven shapes; the counter legs
+(`1/0` fresh, `1/1` after an unchanged layout re-applied, `1/2` after a repeated `prepareToPlay`, `2/2` after the hop
+dial, `3/2` after a layout the gate takes); three refusals moving no configuration field and leaving the render
+unchanged (§5.19's method) while `skipped` reaches 2; a hop-only reconfigure whose diff set is exactly `hop,R`; one
+log line per real prepare and none per declined arrival; an off-message-thread prepare that logs nothing, refreshes
+the report, and leaves the next message-thread prepare free to log. ASan/UBSan (`build/asan`, Debug, asserts ON):
+204 `ok`, 0 FAIL, no invalid access and no UB — the at-exit leak report is JUCE's FFTW backend and predates this item
+(F-018). C6's footprint, printed not asserted: **+64 B at construction and +287…+294 B at the first prepare** —
+761.04 KiB against the published 760.75 mono, 1024.65 against 1024.37 stereo, 1021.48 against 1021.19 at
+`(1, 8, 1)` — which is the report's own `juce::String`, and a second prepare with an unchanged key still costs
+**0 KiB**. C7: §5.1…§5.20's output byte-identical to the pre-report baseline apart from its own wall-clock lines, all
+175 earlier `ok` lines unchanged, `ctest` 189/189. Six of the eight §5 arms red as designed (1, 2, 3, 4, 5, 6), the
+reformat control and the editor blind spot green, every restore `cmp`-verified and the no-mutation control rebuilt
+and green. Per-arm results and the five places the plan needed correcting are in `08` §10 and §11.
+
+---
+
+## D-023 — The layout report: one line naming what the plugin was *told*, assembled at the tail of a real prepare
+
+**Status first.** Decided 2026-11-06 as `plan/M4-impl-plan/08-host-layout-matrix.md` §0 B/C/D and **implemented and
+measured 2026-11-08**: `EntangleAudioProcessor::layoutReport()` over a body written by `refreshLayoutReport` at the
+tail of `configureRings`, the editor's `layoutReadout` label beside the two readouts that already ride the 100 ms
+tick, and `OfflineRender` **§5.21** — 28 lines decided, 0 FAIL, 26 report lines reaching an installed `juce::Logger`.
+`ctest` stays **189/189** (no new registered test: §5.21 lives inside `OfflineRender`, which stays test #189),
+`vstplug_VST3` and `vstplug_Standalone` relinked at `-j4`, ASan/UBSan clean on the new legs. **What it exists to
+answer is still open**: every row H0–H8 in `docs/host-layout-matrix.md` is unanswered, because no host has loaded
+this plugin and §3 rule 4 will not let a container answer one. The instrument is measured; the answers are not.
+
+**Context.** Nothing in this repo's evidence has ever loaded the plugin in a host, so M4 §6's questions — which hosts
+expose a sidechain send wider than mono, whether it can be enabled independently of the main bus, what a refused
+layout does in the wild, how JUCE reports surround and ambisonic buses — have no answer path that does not go through
+a DAW. Reading the host's labels is not a path: F-015 measured this plugin's advertisement (8 sidechain channels
+beside a mono main, 2 beside a stereo one) being computed from the plugin's own gate. So the deliverable is an
+instrument that records what the plugin was *told*, plus a document whose rows count only when they carry that line
+verbatim.
+
+**The decision.**
+
+* **A — one function, one place: the tail of `configureRings`.** After the `gateLayout` call, after the
+  `activeChannels`/`sidechainActive` members, and **after** D-022 B's guard returns early — so the line describes a
+  configuration that was actually built. The ordering is the decision: arm 2 moves the call above the guard and
+  reddens twelve C1 lines plus C2's first-prepare leg, three C3 refusal legs and C4's one-line leg, because a report
+  rebuilt by an arrival that changed nothing stops distinguishing "we rebuilt" from "the host re-applied and we left
+  the transport alone".
+* **B — the fields, and where the counters are formatted.** Bus inventory (`inBuses`/`outBuses`), the live count and
+  `AudioChannelSet::getDescription()` verbatim for each of the three buses plus each bus's `isEnabled()` flag, the
+  gate's `verdict/rule` and `processed`, `getTotalNumOutputChannels()`, the rate, the hop, the requested and running
+  grain length, the declared latency, `hostBlock/maxHostBlockFor(hostBlock)`, `sidechainActive`,
+  `effectiveBlendPosition()`, and the two counters. Two deviations from the plan, both measured into existence. The
+  method is `getDescription()` — **there is no `getName()`** (F-018). And the counters are formatted *at read time*,
+  not when the body is built: a declined arrival never reaches `refreshLayoutReport`, so counters frozen into the
+  body could never show a skip, which is the one thing `skipped=` exists to say. Configuration fields still describe
+  the last real prepare; only the prefix moves, and C2's "the configuration fields did not move" leg compares those
+  fields alone.
+* **C — two deliveries, both message-thread, neither blocking the audio path.** The editor label (whole line in its
+  tooltip, because a label cannot hold it and the editor is mid-rewrite — AGENTS §12), and one
+  `juce::Logger::writeToLog` per real prepare behind `MessageManager::existsAndIsCurrentThread()`. The guard is not
+  decoration: `writeToLog` reaches stdout or `NSLog` and can block, and hosts call `prepareToPlay` from threads of
+  their own choosing. Measured sharpness (F-018): `MessageManager`'s constructor records *its own* thread, so any
+  harness that initialises JUCE's GUI passes the guard on `main()` and logs every prepare — only a genuinely other
+  thread is silenced, which is what C5 tests by forking one. A VST3 host designates its own wrapper thread, so
+  whether the line ever appears in a host log is H0's question, and if it never does, the readout becomes the
+  delivery and this entry gets amended.
+* **D — the counters, and the lock.** `prepares=` counts arrivals that rebuilt, `skipped=` counts arrivals the
+  seven-field key declined (D-022 C). Both are prepare-time state, reachable from nothing in `processBlock`, and both
+  live under a `mutable juce::CriticalSection` with the getter returning by value — `prepareToPlay` has no fixed
+  thread and a `juce::String` assigned under a reader is a crash, not a cosmetic race.
+
+**Rejected (the plan's list, unchanged).** Writing a file from the plugin — a host-specific user-data path, a privacy
+question nobody asked the plugin to answer, and a console harness needing an env var, which splits the tested code
+path from the shipped one. An env-var-gated diagnostic — same split, plus a mechanism with one user. The host's own
+meter — P8 keeps one audible probe precisely because it needs no code, but it answers one question and answers it
+qualitatively.
+
+**Revisit trigger.** If a named host never shows the log line, the delivery is the readout alone and C is amended
+(H0). The whole instrument relocates with the editor rewrite AGENTS §12 anticipates; it follows an existing readout
+pattern precisely so that it moves *with* the pattern rather than being designed twice.
+
+**Evidence.** `OfflineRender` §5.21: C1's 24 fields × 12 accepted triples, 0 wrong each; C1b's eleven pinned channel
+names; the counter walk `1/0 → 1/1 → 1/2 → 2/2 → 3/2`; three refusals moving no configuration field, `skipped`
+reaching 2, and the render unchanged through §5.19's method; a hop-only reconfigure whose diff set is exactly
+`hop,R`; C4's one line per real prepare and none per declined arrival; C5's off-thread prepare logging nothing and the
+next message-thread prepare logging. ASan/UBSan (`build/asan`, Debug, asserts on): 204 `ok`, 0 FAIL, no invalid
+access, no UB. C6, printed not asserted: **+64 B at construction, +287…+294 B at the first prepare** — 761.04 KiB
+against D-022 C's published 760.75 mono, 1024.65 against 1024.37 stereo, 1021.48 against 1021.19 at `(1, 8, 1)` —
+which is the report's own `juce::String`, and **0 KiB** for a second prepare with an unchanged key. C7: §5.1…§5.20's
+output byte-identical to the pre-report baseline apart from the harness's own wall-clock lines, all 175 pre-existing
+`ok` lines unchanged, `ctest` 189/189, and `processBlock` still matching none of `Logger`/`DBG`/allocation/lock.
+Six of the eight §5 arms reddened as designed and the two that should stay green did; per-arm results and the five
+places the plan needed correcting are in `08` §10 and §11.
 
 ---
 
@@ -1486,3 +2281,296 @@ against a reference staged from the very classes the chain uses, so they pin wir
 cannot see a defect *inside* a stage — both sides of the comparison make the same mistake together.
 Unit tests own stage behaviour; the same-stage reference owns composition. Any "the harness is green"
 claim about a stage's numbers has to name which of the two it is resting on.
+
+---
+
+## F-012 — Four channel-map mutation predictions that did not survive the run
+
+**Found 2026-11-01** running `plan/M4-impl-plan/01-channel-map-helper.md` §5's mutations against
+`ChannelMapTests`. Recorded because each one would otherwise be re-derived by the next person who mutates
+this header — and because two of them were load-bearing in a milestone rationale (D-017).
+
+* **`a[c] = c % chA` is not a mutation.** With asymmetric pairs rejected and `channelsOut ≤ max(chA, chB)`,
+  every filled slot satisfies `c < ch` for a multi-channel side, so `c % ch == c`; and for a mono side
+  `c % 1 == 0`, which *is* the broadcast rule. The modulo alternative is observationally identical on the
+  whole accepted set — the mutation left all 12 cases green, where the plan predicted four red. The leg
+  that discriminates the index rule is the one that *accepts* the asymmetric case and resolves it with
+  modulo (criteria 1, 2 and 4 went red).
+* **Commutativity does not argue for rejecting asymmetric.** Under modulo, `resolve(2, 6, 6)` gives
+  `a = [0,1,0,1,0,1]`, `b = [0,1,2,3,4,5]` and the swap gives exactly those two arrays exchanged — the map
+  commutes. The measured result was green on the commutativity leg, which the plan had predicted red. What
+  a modulo rule really costs is injectivity: two outputs reading one source, so an impulse lands in three
+  outputs and the independence criterion stops meaning "mapped to it".
+* **"Nothing half-written" cannot be mutated into view through a value-returning `resolve`.** Moving the
+  capacity check after the fill loop writes indices into a local that is then discarded and a fresh
+  value-initialised map returned, so the pristine check on the rejected result stays green — only the
+  table leg went red, and it went red on *status precedence*, not on the fill. With this API shape the
+  property is structural: a rejected call cannot publish indices. Testing it as if it were behavioural
+  needs an out-parameter, and that is a worse API for a map that is copied by value onto the audio path.
+* **`ctest` runs whatever binary is on disk.** Four of the eight mutations are caught by the criterion-8
+  `static_assert`s, so the compile fails and `ctest` reports the *previous* mutant's failures — which read
+  as a genuine new result until the build status was checked. A mutation run has to gate the test run on
+  the build's exit status, and a green-looking list is not evidence of anything.
+
+**The rule that falls out.** Write mutation predictions as predictions, run them, and let the measured
+column overrule the plan — including when the overruled claim is the one a milestone used to justify a
+restriction. And when a criterion's discrimination is structural rather than behavioural, say so in the
+criterion rather than letting a later reader conclude the test is doing work it cannot do.
+
+---
+
+## F-013 — A rule keyed to the main bus shape leaves commutativity with no domain to be tested over
+
+**Found 2026-11-02** while recording D-018, which was itself found by working out what the decision does to
+`ChannelMapTests`'s commutativity leg rather than by assuming the leg would survive it.
+
+D-017's accepted map was symmetric in (`chA`, `chB`) — every rule was stated over the pair without saying
+which side was the plugin's own signal — which is what let that item's commutativity leg swap every `ok`
+triple that has a sidechain and check the two index arrays exchange bit-exactly (601 assertions,
+`plan/M4-impl-plan/01-channel-map-helper.md` §10 row 3). D-018 keys the rule to the **main** bus: a mono main
+with a wide sidechain consolidates to one channel, a wide main with a mono sidechain broadcasts to `chA`
+channels. Those two are different channel counts, so the swap partner for the whole (`1`, `> 1`) family is a
+layout with a different shape.
+
+Worked through, the `ok` families after D-018 are:
+
+| Family | Swap partner | Non-trivial? |
+|---|---|---|
+| `chB == 0` | none — swapping moves to `empty` (A is the mandatory side) | n/a |
+| `chA == chB` (including `1, 1`) | itself; both sides map by index | no — identity both ways |
+| `chA > 1`, `chB == 1` | (`1`, `chA`) → consolidated, one channel | no — different channel count, no comparison to make |
+| `chA == 1`, `chB > 1` | (`chB`, `1`) → broadcast, `chB` channels | no — same asymmetry seen from the other side |
+
+So the only pairs still swappable are the diagonal ones, where both sides map `c → c` and the assertion is
+true by construction. **A leg written as "swap and compare" becomes a tautology.** The concrete reds when
+item 09 landed (2026-11-02, both line numbers pre-amendment): `ChannelMapTests.cpp:474`'s `(1, 2) → 2 outputs`
+pin and the leg's own domain guard at `:292` (`resolve(1, 4, 4).status == ok`), whose companion at `:293`
+stayed green — which is exactly how a half-dead leg looks on the console.
+
+**What follows for the milestone.** M4 §1's "A-mono with B-stereo equals B-stereo with A-mono" is superseded,
+and the reason is that A and B are not interchangeable roles: A is the track's own signal, B is the sidechain,
+and a rule may legitimately key on that distinction. M4 §7's commutativity row has to be restated as either a
+structural property of the equal-count case — stated as trivial, so nobody reads it as a pass — or dropped,
+leaving render-level symmetry out of the acceptance set entirely. Do not re-add commutativity as a
+discriminator for anything in this file's history: F-012 already measured that a modulo map commutes cleanly,
+so it discriminated nothing even when its domain was wide.
+
+**Landed 2026-11-02 as the restatement, not the deletion** (item 09, §11 records the choice). The leg is
+named `"commutativity survives only on the equal-count diagonal, where it is trivial (F-013)"`, checks the 24
+diagonal triples that fit under the ceiling, and asserts per slot that both sides read index `c` — which is
+the proof that the swap it then performs is a tautology rather than a finding. It also asserts the two
+families that lost their partner (`(4, 1)` → 4 channels, `(1, 4)` → 1) side by side, so the shape difference
+that kills the relation is visible in the test. The old leg's wide-domain guard, `resolve(1, 4, 4)` was `ok`,
+is inverted into the positive claim that such a request is now `countMismatch`.
+
+**The general rule.** A property that holds only while the rule is symmetric in its two arguments cannot
+survive as an acceptance criterion once the rule is keyed to which argument plays which role. When a decision
+breaks that symmetry, check which criteria still have a *domain* before carrying any of them into the next
+item — a criterion whose test set has quietly become the diagonal still reports green, and green is what makes
+it dangerous.
+
+## F-014 — A buffer sized by the processed count and indexed by the source count: a live overflow that 158 green legs could not see
+
+**Found 2026-11-03** while writing `plan/M4-impl-plan/02-broadcast-resolution.md`, and found by sanitizer
+rather than by reading: `HopScheduler::prepare` allocated `hopBufferB` with `hop * config.channels` — the A-side
+width — while `process` wrote it with `hop * config.sidechainChannels`, one slice per B ring. Any layout where
+the sidechain is wider than the main input wrote past the end of that allocation, into whatever the heap handed
+out next.
+
+```text
+WRITE of size 4 at 0x511000000280 thread T0
+    #1 container::CircularBuffer<float>::read(float*, unsigned long)
+    #2 engine::HopScheduler::process(...) src/Engine/HopScheduler.cpp:149
+```
+
+The layout is not exotic. `isBusesLayoutSupported` gated on `mainIn == mainOut` and on capacity, never on the
+relation between the two input buses, so a mono main with a stereo sidechain — a normal thing to route — was
+accepted, configured, and run. Nothing in 158 test cases touched it, because every leg that drives a sidechain
+used matching widths: the value tests were asserting arithmetic on a buffer whose *extent* nothing asserted.
+
+**Why it survived, and what that says about the suite.** Every leg in the file checked a *number*. A wrong
+extent is not a wrong number — the samples are read and written correctly inside the slice, and the overrun
+lands in slack that `std::vector` growth or the allocator's rounding may have supplied anyway, at a size where
+the run stays silent and the next `free` decides. Two consequences worth keeping:
+
+* **A value-level suite gives no evidence about memory safety, and no number of green cases buys any.** The
+  M4 rule that a component's extents are derived in `prepare` from one place is what makes this checkable at
+  all; the check is a sanitizer run over the shapes the rule permits, not another assertion on the samples.
+* **Derive the extent and the index from the same source value.** The fix is not a bound — bounding the write
+  would have hidden a wrong answer — it is that sizing is per *source* on the way in (`chA` A rings, `chB` B
+  rings) and per *processed* channel on the way out, with `prepare` throwing on a map whose index names a ring
+  that does not exist. The consolidation family is exactly the case where the two counts differ, which is why
+  a rule about *levels* (D-018) turned into a memory-safety finding.
+
+**Reproduced and then closed by item 02** (2026-11-04): `src/Engine/HopScheduler.cpp` sizes by source and points
+by processed count, and the ASan/UBSan repro over `(1,2,1)`, `(1,8,1)`, `(2,1,2)`, `(2,2,2)`, `(2,0,2)` exits 0
+with nothing on stderr. Re-running the arm with the old sizing reproduces the fault above. The plan's §5 arm 7
+predicted "no value leg can see it"; measured, glibc aborts four legs on this host — but that is a crash
+falling out of allocator state, not a test that would fail, and the sanitizer leg is the one that names the
+buffer and the line.
+
+---
+
+## F-015 — JUCE asks the gate two different questions, and only one of them is the layout the host asked for
+
+**Found 2026-11-04** measuring `OfflineRender` §5.18 for M4 item 03, while checking whether a refusal leaves the
+plugin where it started. It does — but only on the path a host is supposed to use. The two entry points into
+`isBusesLayoutSupported` behave differently, and the difference is not in the plugin.
+
+**The clean path.** `AudioProcessor::setBusesLayout` → `canApplyBusesLayout`, which defaults to
+`isBusesLayoutSupported(layouts, /*allowReplacing=*/false)` (`juce_AudioProcessor.cpp:118-131`; the virtual is
+declared const at `juce_AudioProcessor.h:1465`). Our three counts reach the gate exactly as the host wrote them,
+and a `false` applies nothing: measured over 10 refusal shapes — wide main, unequal mains, `chB` 3…9 on a stereo
+main, `chB` 9 on a mono main, a 0-channel main — 0 layouts applied, 0 buses moved, the layout identical after
+each attempt. Bus *count* changes are checked before the virtual (`checkBusesLayoutSupported`, `:222-227`), and
+`canAddBus`/`canRemoveBus` default to false, so the inventory is fixed at 2 in / 1 out and a third bus never
+reaches the gate.
+
+**The substituting path.** `AudioProcessor::Bus::setLayout` (`:196-206`) never asks the whole question. It calls
+`getBusesLayoutForLayoutChangeOfBus` → `getNextBestLayout` (`:231-330`), whose ladder is: the request as-is; the
+*opposite* bus set to the requested width; the opposite bus set to its default; all buses set to the request;
+then whichever of default and current is nearer. Whatever that returns is applied — **without
+`canApplyBusesLayout` being consulted again**, because the rung that produced it is JUCE's own. So a per-bus
+probe can move a bus the host never mentioned. Measured from a mono origin: setting the main input to stereo is
+"honoured" and lands on `(2, 0, 2)` — the main output followed it. Setting the main output to stereo does the
+same. Setting the sidechain to stereo lands on `(1, 2, 1)`, which the gate genuinely accepts. 3 of 12 probes were
+honoured; 0 landed on a layout the gate refuses — the rungs stay inside the accepted family because every rung
+keeps `mainIn == mainOut` — but two of the three honoured probes moved a bus nobody asked about. From a stereo
+origin, all 9 wide requests are refused and nothing moves.
+
+**The advertisement depends on where you start.** `Bus::getMaxSupportedChannels` (`:1082-1090`) and
+`supportedLayoutWithChannels` (`:1140-1159`) walk widths and ask the gate *with the current layout in place*, so
+the same plugin advertises a sidechain maximum of **8 beside a mono main** and **2 beside a stereo main**
+(measured on three setups). That is a correct consequence of a rule that keys on the pair (D-018), not a defect.
+What is wrong is any statement of the form "the sidechain takes up to 8 channels" with no main-bus qualifier —
+including the one in item 03's acceptance criterion 7, corrected in that plan's §11.
+
+**Why it matters here, and the rule that follows.** A gate can only be asked about whole layouts, so it cannot
+prevent substitution; it can only guarantee that whatever JUCE lands on is a layout it serves. That guarantee is
+now measured (§5.18's substitution table, 12 probes over three origins). For everything downstream — this repo's
+harness, any preset loader, any host-facing doc — **drive layouts with `setBusesLayout`**; use the per-bus probe
+only to learn what JUCE would substitute, and expect that answer to depend on the layout you are standing in.
+
+
+## F-016 — A footprint figure that re-evaluates the sizing expression cannot notice the expression changing
+
+**Found 2026-11-05** writing the C1 measurement for M4 item 04, in two places that had been reading as one.
+
+**The documented bound understated the engine by 1.5F.** `EntangleProcessor.h` stated the cap's footprint as
+"stereo, 9F + 6 floats of engine buffers plus the transform's 2F scratch, so ~704 KB at the default 8192 and ~5.5 MB
+at this cap". The allocation sites say otherwise: two history rings and one accumulator ring per processed channel
+totalling 2F (`GrainHistory.cpp:19-21`, `OlaAccumulator.cpp:18-20`), a shared scratch set of six vectors at 6F + 6
+(`GrainEngine.cpp:60-65`), the Hann window table at L = F/2 (`Window.cpp:13`), and `JuceFft`'s 2F of in-place scratch
+(`JuceFft.cpp:29`) — **10.5F + 6 floats at one processed channel, 12.5F + 6 at two**. At the default L = 8192
+(F = 16 384) that is 800 KiB against the comment's 704; at the cap L = 65 536 (F = 131 072) it is 6.25 MiB against
+5.5 MB. Measured (`tools/PrepareFootprint` [4]): 812.5 KiB and 6 447 KiB for the stereo engine. The residue over the
+*corrected* bound — 7.1 KiB mono / 12.5 KiB stereo at the default, 26.6 / 47.0 KiB at the cap — is `juce::dsp::FFT`'s
+own tables plus the three safety stages, and it grows with F, which is the half of the story the comment left out: the
+transform's tables are not in the bound and cannot be, because the backend is chosen at runtime (vDSP, IPP, MKL, FFTW
+or the fallback). Corrected in the comment, dated, with the exclusion named.
+
+**The harness was printing a copy of the scheduler's arithmetic, not a figure about the scheduler.** §5.18 built
+`container::CircularBuffer<float>(EntangleAudioProcessor::maxHostBlockSamples + hop)` and read `capacity()` — a second
+copy of `HopScheduler.cpp:53-55` — so changing the scheduler's sizing expression leaves the leg printing the old
+number with the suite green. It was not an isolated instance: two harness `ChainConfig`s recomputed
+`std::max(kMaxBlock, maxHostBlockSamples)` and a third set `maxHostBlock` to the bare constant where the shell applies
+the floor. Four copies of a policy expression, none of them the policy. §5 arm 8 is the mutation that proves the
+difference: reverting the hop-scratch sizing to F-014's shape makes `OfflineRender` die of heap corruption inside
+`[5.15]` — before the footprint block runs, and without a single leg failing — so the printed figure stays a figure
+about the expression, not about what the scheduler allocates. Only the sanitizer tree names the overrun
+(`CircularBuffer::copyOut`, `(1, 8, 1)`), and only a byte-counting program that drives the production sizing says
+what the layout actually costs.
+
+**The rule that follows.** A printed figure about a production expression either **calls the production function** or
+says out loud that it is a restatement and points at the measurement. Measuring instead of restating costs one binary
+with a replaced global `operator new`, and that is also why it cannot be folded into anything that exists: one
+`operator new` per binary, so `PrepareFootprint` is its own target and `OfflineRender` stays free of the hook. The
+policy needed a name before it could have a leg — `maxHostBlockFor` is why §5.19 can sweep the floor without
+allocating a plugin, and why §5.18's block now routes through the shell and calls itself restated.
+
+## F-017 — A leg whose expected output is produced by the component under test cannot witness a mutation inside it
+
+**Found 2026-11-06** running the discriminator arms of M4 item 06 (`OfflineRender` §5.20, the channel matrix), and
+it is a harness finding rather than a product one — which is why it reads F-016's shape from the other direction.
+
+**Two arms that should have been caught at render level and were not.** Arm 6 replaces the scheduler's
+`hopA[slot] = hopBufferA + map.a[slot] * hopSpan` with `slot`; the matrix printed **175 `ok` and 0 FAIL**, and the
+only red in the whole suite was `EngineTests` #61 (261 assertions). Arm 2 resolves a broadcast B slot to silence
+instead of its source, and the two broadcast cells — `(1,1,1)` and `(2,1,2)`, the layouts the same item was written
+to hear for the first time — stayed green while the consolidated cells reddened. The reason is the same in both
+cases and it is structural: every model §5.20 compares against (`renderOf`, `slotModel`, `monoPairModel`) reaches
+the chain through `renderReference`, which builds **its own `engine::HopScheduler`**. A mutation inside the
+scheduler moves the render and its expectation together, so `max |got − want|` stays `0.000e+00` and a bit-exact
+verdict prints next to wrong audio. The leg is not weak because its tolerance is loose; it is weak because the
+thing it measures and the thing it predicts share the code under test.
+
+**The fix is a second, model-free half on the same leg.** M4 and M5 now require a mapped slot to carry a sample in
+absolute terms (`deadMapped`, counted as `!(slotPeak > 0.0)` and printed as `%d dead`) *before* the comparison to
+its model decides anything. With it, arm 2 reddens **37 lines of §5.20** including both broadcast cells. Silence is
+already asserted absolutely — an unmapped output is required to be exactly `0.0f` — and that half caught arm 4 (the
+fold dropping its last source) at 10 lines without any help from the new requirement, which is the sign the two
+halves are doing different jobs.
+
+**The harness crash that was really the same finding.** Arm 7 (`applyLayout` ignores `bus.sideSet`) and its
+matrix-local twin 7b (every cell applies `kStereoWithB` while keeping its own literal expectations) both died with
+SIGSEGV, 7b inside `checkChannelMatrix` — gdb frame #0, with the log ending mid-§5.19 only because stdout is
+block-buffered and that is where the last flush landed. The cause is the mirror of F-014's: M1 filled its callback
+from `getChannelCountOfBus`, the *applied* counts, while its streams are sized by the cell's, so `(1,0,1)` read
+`b[0]` on an empty `Stream`. A leg whose whole job is to *report* a layout that is not the one it declares must not
+be the first thing to dereference it. M1's fills are now bounded by the streams and the five sample legs run only
+after M1 passes; the same mutant prints **9 M1 FAIL lines**, `(2,2,2)` — whose declared layout is the injected one —
+runs all six legs green, and nothing crashes.
+
+**The rule that follows.** Any leg whose expectation is computed rather than written down has to say which of its
+assertions survive the expectation being wrong, and at least one must be absolute: a non-zero sample, an exact
+`0.0f`, a byte count, a name. A comparison against a model is a statement about the difference between two paths,
+and a mutation the two paths share is invisible to it at every tolerance — the more shared machinery the harness
+reuses for convenience, the more of the product it has quietly placed above test. Reusing the chain is still right
+(the alternative is a second implementation to keep in sync, which is what F-016's restated arithmetic was);
+what was wrong was treating the comparison as the whole leg.
+
+---
+
+## F-018 — JUCE claims a message thread for whoever constructs one, calls a disabled bus `Discrete #0`, and a prepare-snapshot report can never name a refusal
+
+Measured 2026-11-08 building the item 08 instrument — three facts that each changed how the code or a leg had to be
+written, plus one that only changes what a future reader will otherwise mistake for a bug.
+
+* **`MessageManager`'s constructor records the thread that built it** (`messageThreadId (Thread::getCurrentThreadId())`,
+  juce_MessageManager.cpp:38), so `initialiseJuce_GUI()` — and therefore `ScopedJuceInitialiser_GUI` — makes that
+  thread the message thread without any call to `setCurrentThreadAsMessageThread()`, which exists in exactly one place
+  in JUCE: the plugin client (juce_audio_plugin_client_VST3.cpp:280). Two consequences, both paid for. (i) A console
+  harness that initialises JUCE's GUI satisfies D-023 C's guard on `main()`, so the report line went out on **every**
+  prepare and interleaved itself into all twenty of `OfflineRender`'s earlier sections — C7's byte comparison needed a
+  logger installed in `main()` that drops report lines, replaced inside §5.21 by one that counts them. (ii) The
+  negative branch cannot be rehearsed by "doing nothing"; it takes a real second thread, which is what C5 now forks.
+  For a host this cuts the other way: the wrapper designates its own thread, so a host that prepares on the audio
+  thread shows no log line anywhere — H0's whole question, and the reason the readout is a delivery rather than a
+  convenience.
+* **`AudioChannelSet` has no `getName()`** — the plan's word — and `disabled().getDescription()` returns
+  **`Discrete #0`**, because `getDescription()` tests `isDiscreteLayout()` before comparing against `disabled()`
+  (juce_AudioChannelSet.cpp:424). A report line saying `side=0 sideName=[Discrete #0] sideEn=0` is therefore JUCE
+  saying *there is no send*, and the count with the enable flag is what a reader must trust, not the words. Pinned as
+  §5.21 C1b so the fidelity survives: the tempting "fix" is to print `Disabled`, which loses the verbatim property P5
+  depends on.
+* **The naming table for the eleven shapes the report can carry**, verbatim from this JUCE:
+  `0:Discrete #0 1:Mono 2:Stereo 4:Quadraphonic 4:1st Order Ambisonics 6:5.1 Surround 8:7.1 Surround 8:Octagonal
+  8:Discrete #8 9:2nd Order Ambisonics 9:Discrete #9`. Width 4 is shared by quadraphonic and first-order ambisonic and
+  width 8 by three shapes, so the name distinguishes them while `processed` does not — which is exactly the treatment
+  question M4 §6 leaves open, now with the words attached. What a host still owes is whether it routes those shapes to
+  a plugin at all.
+* **A report assembled at prepare can never carry a refusal word.** `configureRings` runs only for a layout that was
+  applied, and §5.18 measured 0 of 192 probes landing on a refused one, because `isBusesLayoutSupported` refuses
+  before JUCE builds anything. So `gate=mainWidth` and `gate=channelRule` are unreachable in a pasted line, plan `08`
+  C1's "refusal sample" clause is unachievable as written, and the vocabulary is pinned where it *is* observable:
+  §5.18's probe table and C3's `gateLayout` comparisons, with the counters as the evidence that the attempt happened.
+  Same reason for §5 arm 2 being half an equivalent mutant: "publish a processed count for a refused triple" cannot be
+  reached from a console; "rebuild on an arrival that changed nothing" can, and that is what reddens it.
+
+**And one number to stop re-investigating.** `OfflineRender` under LeakSanitizer exits 1 reporting **14.48 MB across
+161 540 allocations in 297 records, every one** rooted in `juce::dsp::FFT`'s FFTW backend — `FFTWImpl::create` at
+juce_FFT.cpp:84, under `fft::JuceFft::Impl`, reached from `configureRings`. 274 records (12.0 MB) come from legs that
+predate item 08 and 23 (1.68 MB) from its own fresh-instance prepares: one cached plan set per transform, never
+returned to the OS. No invalid access, no UB, and the report's own allocation appears nowhere in the report. Read it
+as JUCE-plus-FFTW global planning state on Linux, not as product leakage; whether the vDSP backend on macOS behaves
+the same is unmeasured here.

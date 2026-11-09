@@ -48,13 +48,13 @@ vst3/                      # CMake project "vstplug", C++23
 ├── src/
 │   ├── CMakeLists.txt     # add_subdirectory(Entangle, Dsp, Container, Engine, Fft, FftJuce, Grain)
 │   ├── Container/         # container primitives: CircularBuffer (JUCE-light)
-│   ├── Dsp/               # signal primitives: DcBlocker, SoftClipper, LevelDetector (JUCE-light)
-│   ├── Engine/            # hop-aligned engine seam: Engine.hpp, MixEngine, HopScheduler (JUCE-light)
+│   ├── Dsp/               # signal primitives: DcBlocker, SoftClipper, LevelDetector, LevelNormalizer (JUCE-light)
+│   ├── Engine/            # hop-aligned engine seam: Engine.hpp, MixEngine, HopScheduler, ChannelMap (JUCE-light)
 │   ├── Fft/               # transform seam: IFft contract, naive Dft oracle, half-spectrum product (JUCE-light)
 │   ├── FftJuce/           # the one JUCE-aware IFft adapter (calibrated engine gain, D-006)
 │   ├── Grain/             # mode 1 wet path: GrainHistory, OlaAccumulator, window/gain, GrainConvolutionEngine (JUCE-light)
 │   └── Entangle/          # JUCE plugin shell — INTENTIONALLY UNDOCUMENTED (§12)
-├── tools/                 # OfflineRender (offline harness) and CpuBaseline (M7 cost data)
+├── tools/                 # OfflineRender (offline harness), CpuBaseline (M7 cost data), PrepareFootprint (D-022 C memory figures)
 ├── cmake/                 # EntangleTestFramework.cmake — test-framework wiring (D-005)
 ├── juce/                  # submodule: juce-framework/juce @ >= 9.0.4
 ├── plan/                  # roadmap docs, not part of this index
@@ -66,15 +66,18 @@ Targets present after a configure (`cmake --build build/release --target help`):
 
 | Target | What it is |
 |---|---|
-| `vstplug` | The `juce_add_plugin` target (`PRODUCT_NAME "Entangle"`); compiles processor + editor and links `Engine` + `Grain` + `FftJuce`, so what ships is `MixEngine(GrainConvolutionEngine)` on a `fft::JuceFft`. |
+| `vstplug` | The `juce_add_plugin` target (`PRODUCT_NAME "Entangle"`); compiles processor + editor and links `Engine` + `Grain` + `FftJuce`, so what ships is `MixEngine(GrainConvolutionEngine)` on a `fft::JuceFft`, with the DC blocker, the level normalizer and the soft clipper installed around the law. |
 | `vstplug_VST3` / `vstplug_Standalone` | Format wrappers built from `vstplug`. |
-| `Dsp` | Static library for `src/Dsp` — `dsp::DcBlocker` (5 Hz Butterworth HP, D-013), `dsp::SoftClipper` (+6 dB ceiling, D-012) and `dsp::LevelDetector` (windowed RMS/peak plus an attack/release envelope, D-014). JUCE-light, links nothing but the assert switch. |
+| `Dsp` | Static library for `src/Dsp` — `dsp::DcBlocker` (5 Hz Butterworth HP, D-013), `dsp::SoftClipper` (+6 dB ceiling, D-012), `dsp::LevelDetector` (windowed RMS/peak plus an attack/release envelope, D-014) and `dsp::LevelNormalizer` (the `√(envA · envB)` level stage: gate, ±36 dB, 360 dB/s slew, D-015/D-016). JUCE-light, links nothing but the assert switch. |
 | `Container` | Static library for `src/Container` (`container::CircularBuffer`). |
-| `Engine` | Static library for `src/Engine` (engine seam + `MixEngine` + `HopScheduler`); links `Container` + `Dsp`. |
-| `OfflineRender` | Console harness that renders through the plugin's shared code; registered with CTest. |
-| `ContainerTests`, `EngineTests` | Catch2 console test programs (§10). |
-| `DspTests` | Catch2 console program for all three classes (§10): corner, DC residue, passband flatness, chunk and channel invariance, the clipper's identity/monotonicity/ceiling/non-finite rules, and the detector's settling values, time constants, rate invariance, exact silence and 60 s drift. One binary — the allocation-counting legs replace global `operator new`, so it must stay the only one in the directory, and `ctest -R` filters these by case name, not by target name. |
-| `MixEngineTests` | Catch2 program for `engine::MixEngine` and the mix law (§10); its own binary because it replaces global `operator new` to prove the hop path does not allocate, which `EngineTests` already does. |
+| `Engine` | Static library for `src/Engine` (engine seam + `MixEngine` + `HopScheduler` + the header-only `ChannelMap`, D-017, the header-only `LayoutGate`, D-021, and the header-only `ReconfigureKey`, D-022); links `Container` + `Dsp`. |
+| `OfflineRender` | Console harness that renders through the plugin's shared code; registered with CTest. **§5.20 is the channel matrix** (M4 item 06): ten cells — nine of the twelve gate-accepted triples plus `(1,5,1)` re-run at the shipped shape — each through a literal mapping table checked against `resolve`, geometry, shell identity, three block plans, A-side and B-side independence per mapped source, and the dry path; then three family legs (the two asymmetric resolutions each matching their own model, the level stage confined to one channel with the stage live, and the fold's reciprocal at `chB` ∈ {2,3,5,8}). 93 `ok` lines of its own at 0.9 s on its own clock; no product code. **§5.21 is the layout report** (M4 item 08, D-023): 28 lines checking every field of a real `layoutReport()` against an authority outside it for the twelve accepted triples, JUCE's own words for eleven bus shapes, the `prepares=`/`skipped=` counters against what `configureRings` was asked to do, a refused layout moving neither the report's configuration fields nor the running render, and the log guard on both of its branches — run last, because it swaps the installed `juce::Logger` for a counting one, which is why `main()` installs a filter that keeps §5.1…§5.20's output byte-identical to the pre-report baseline. |
+| `ContainerTests`, `EngineTests` | Catch2 console test programs (§10). `EngineTests` is the scheduler's suite: the original ten cases (exactness, hop clock, latency pre-fill, no-alloc) plus M4 item 02's eight — broadcast reaching the Engine as one repeated B pointer, the mono-main fold as an exact mean at `chB` ∈ {2,3,4,8} over four side patterns with the A side of the same hop checked for non-interference, the `kConsolidatedSource` marker rather than its index selecting the fold, silence on every processed slot when the sidechain is absent, a prepare that takes every map the rule resolves and throws on an index outside its side, hostBlock invariance for both new shapes, and no allocation for either the broadcast or the fold. 18 cases / 2 257 172 assertions. |
+| `DspTests` | Catch2 console program for all four classes (§10): corner, DC residue, passband flatness, chunk and channel invariance, the clipper's identity/monotonicity/ceiling/non-finite rules, the detector's settling values, time constants, rate invariance, exact silence and 60 s drift, and the normalizer's geometric-mean target, half-slope, amount-as-exponent identity, upstream reading, floor gate, ±36 dB clamp, time-not-per-hop slew cap, return to exact unity, poisoned-channel count and zero-allocation hop path. One binary — the allocation-counting legs replace global `operator new`, so it must stay the only one in the directory, and `ctest -R` filters these by case name, not by target name. |
+| `MixEngineTests` | Catch2 program for `engine::MixEngine` and the mix law (§10); its own binary because it replaces global `operator new` to prove the hop path does not allocate, which `EngineTests` already does. Covers the installed level stage's delay figures, zero allocation and inability to reach a dry bus, and the chain-ordering leg that proves the level stage reads the stream *after* the DC blocker — a DC-on-tone wet stub, the stage's own conv reading compared hop-for-hop against a bare detector on the same samples, and the applied gain compared against what the blocked stream implies (M4 item 07, closing D-016's last untested invariant). |
+| `ChannelMapTests` | Catch2 program for `engine::ChannelMap` (D-017 as amended by D-018, §10): the whole 729-triple table over `{0,1,2,3,4,6,8,16,17}³`, broadcast exactness, the consolidated mono-main family (one output, the `kConsolidatedSource` marker, the `out > 1` rejection, the ceiling on bus width), the commutativity leg F-013 leaves standing on the diagonal, the asymmetric and count rejections, silence-versus-channel-0, the capacity boundary at four capacities, index range and reachability, determinism, and zero allocation — its own binary for the same `operator new` reason as `MixEngineTests`. Its shipped mappings are `static_assert`ed, so a rule edit that changes one fails the build. |
+| `LayoutGateTests` | Catch2 program for `engine::gateLayout` (D-021, §10): the 12 shapes the pre-D-021 shell gate could see with their exact verdict, status and processed count; the `[0,12]³` derivation sweep (2 197 triples) where the decision's `rule` must equal `ChannelMap::resolve`'s status on **every** path and `accepted` may only be where the map says `ok`; the `mainOut == mainIn` count rule, including the leading selections the map happily takes; the newly host-reachable consolidated family `(1, chB 2…8, 1)` and its `chB == 9` ceiling; one leg per refusal family; the leg that asserts the `chB <= chA` prose paraphrase over-admits by 22 triples and that this gate over-admits by 0; totality and order-independence; the compile-time pins; and zero allocation — its own binary for the same `operator new` reason as `MixEngineTests`. Case names all start `"layout gate: "`, so `ctest -R "layout gate"` selects all 9. |
+| `ReconfigureTests` | Catch2 program for `engine::ReconfigureKey` and the scheduler's ring accounting (D-022, §10): seven one-case-per-field legs so a field dropped from `operator==` reddens exactly one of them, the all-equal leg, the leg that a value-initialised key matches no real configuration, the refused triple that clears the stored key, and the four *byte* legs — live bytes per triple with rings sized by source in and processed out, the narrowing that gives its sidechain rings back, hop scratch that keeps its high-water across that narrowing, and the first callback after a re-prepare allocating nothing at the ceiling triple. Its own binary for the same `operator new` reason as `MixEngineTests`; case names all start `"reconfigure: "`, so `ctest -R "reconfigure"` selects all 14. The shell-side consequences of the same guard (bit-exactness across a real mid-session `setBusesLayout`, the clamp-swallowed dial move, the latency figure, the sizing floor) are `OfflineRender` §5.19 legs, because they need a real `AudioProcessor` and that program may not carry the allocation hook. |
 | `FftTests`, `FftJuceTests` | Catch2 console test programs (§10); `FftJuceTests` links JUCE, `FftTests` does not. |
 | `Fft` | Static library for `src/Fft` — `fft::IFft` contract, `fft::Dft` oracle, `fft::multiplyHalfSpectrum` product. JUCE-light. |
 | `FftJuce` | Static library for `src/FftJuce` — `fft::JuceFft`, the only JUCE-aware transform. Links `Fft` + `juce::juce_dsp` (D-006). |
@@ -82,16 +85,20 @@ Targets present after a configure (`cmake --build build/release --target help`):
 | `GrainTests` | Catch2 console program (§10): primitives plus the engine on the `fft::Dft` oracle. No JUCE. |
 | `GrainEngineJuceTests` | Catch2 program running the **same** `GrainEngineChecks.hpp` assertions on `fft::JuceFft`; the only Grain test that links JUCE. |
 | `CpuBaseline` | Console measurement of per-callback cost for M7 (F-007). Deliberately not in CTest — wall-clock on a shared host is not a pass/fail signal. |
+| `PrepareFootprint` | Console measurement of live bytes for M4 item 04 (D-022 C): the scheduler's per-triple figure over the four hop values, what a narrowing re-prepare releases and what keeps its high-water, the whole shipped chain through `fft::JuceFft` at the default grain length and both cap-dial positions, and the shell through `createPluginFilter()` including the zero-cost second prepare. Replaces global `operator new`/`delete` to count, prints, exits 0, names its host and build type on the first line. Deliberately not in CTest for `CpuBaseline`'s reason — the numbers are the deliverable and a byte limit is not (D-022 C ruled out asserting one). |
 | `EntangleCatch2` | The Catch2 this repo builds itself, from pinned amalgamated sources (§10). |
 
 `Container`, `Dsp`, `Engine`, `Fft`, `FftJuce` and `Grain` are registered in `src/CMakeLists.txt` and carry
 their own `target_include_directories(... PUBLIC ...)`, so consumers `target_link_libraries`
 against them instead of leaning on the root `include_directories`.
 The console apps do not land beside their targets: `OfflineRender` is at
-`build/<config>/tools/OfflineRender_artefacts/Release/OfflineRender` and `CpuBaseline` at
-`build/<config>/tools/CpuBaseline`, so a direct run of the former through a guessed path fails with
-127. Prefer `ctest --test-dir build/<config> -R OfflineRender --output-on-failure`, which knows where
-it went and prints the section log on failure.
+`build/<config>/tools/OfflineRender_artefacts/Release/OfflineRender` and `PrepareFootprint` at
+`build/<config>/tools/PrepareFootprint_artefacts/Release/PrepareFootprint` — both are
+`juce_add_console_app`, so each gets its own `_artefacts` directory — while `CpuBaseline` is a plain
+`add_executable` at `build/<config>/tools/CpuBaseline`, so a direct run of the first through a guessed path
+fails with 127. Prefer `ctest --test-dir build/<config> -R OfflineRender --output-on-failure`, which knows where
+it went and prints the section log on failure. `PrepareFootprint` is not in CTest, so it has to be run by that
+path, and it prints its host line before any figure.
 Generated plugin bundles land under
 `build/<config>/src/Entangle/vstplug_artefacts/{VST3,Standalone}/`, or under
 `vstplug_artefacts/Debug/` when the cache carries `CMAKE_BUILD_TYPE=Debug`. The segment
@@ -116,7 +123,8 @@ Notation shared by code, tests and docs — never invent synonyms, and never use
 | `L` | grain length in samples (mode 1) or IR length (mode 2) |
 | `F` | FFT size; `F >= 2L` and a power of two for linear convolution |
 | `P` | partition size |
-| `N` | number of processed channels |
+| `N` | processed channel count — `max(chA, chB)`, *before* consolidation: a mono main with a wider sidechain processes 1 and folds that sidechain to the arithmetic mean of its channels, above the seam (D-017, amended by D-018) |
+| `chA`, `chB` | main-input and sidechain channel counts, `chB == 0` when the sidechain bus is absent; the pair is rejected when both exceed 1 and differ (D-017), and `chA == 1 && chB > 1` consolidates rather than broadcasting (D-018) |
 | `p` | blend dial position in `[-1, 1]` |
 | `R` | the processor's declared latency, `latencySamples()` — what the host compensates and what the scheduler's pre-fill realises |
 | `W` | the wet path's own delay, `wetDelaySamples()`; equal to `R` unless an engine defers the wet stream further than the whole output (D-004) |
@@ -283,13 +291,17 @@ Seams this project is built around:
   convolution code.
 * **Containers** — `src/Container` owns circular/FIFO buffers and the scratch
   storage policy. DSP asks for storage; it does not choose an allocator.
-* **Signal primitives** — `src/Dsp` (the DC blocker, the output safety clipper and the level
-  detector today; convolution, fade, extend, tone generation as later milestones need them): small,
-  independent, composable, unaware the plugin exists. `engine::MixEngine` is the only place
-  that decides *which* of them run and in what order (D-012, D-013).
+* **Signal primitives** — `src/Dsp` (the DC blocker, the output safety clipper, the level detector and
+  the level normalizer today; convolution, fade, extend, tone generation as later milestones need them):
+  small, independent, composable, unaware the plugin exists. `engine::MixEngine` is the only place
+  that decides *which* of them run, whether they run at all, and in what order (D-012, D-013, D-016).
 * **Parameters** — one place maps host parameter IDs to typed, smoothed values.
 * **Scheduling** — hop/partition stepping is its own concept driven by the
-  engine, not open-coded inside a processing loop.
+  engine, not open-coded inside a processing loop. It is also where the channel map becomes pointers:
+  `HopScheduler::prepare` resolves `ChannelMap` once, so a narrower side reaches the `Engine` as one address
+  repeated (D-017) and the mono-main fold happens in the scheduler's own hop (D-018) — the design's only
+  cross-channel read, and it is above the `Engine::processHop` seam, never below it. Sizing follows the same
+  split: rings and input scratch by *source* count, pointers and output by *processed* count (F-014).
 
 Rules that keep them clean:
 
@@ -363,9 +375,9 @@ its contract.
 
 | Component | Doc | Status |
 |---|---|---|
-| `src/Dsp` | `src/Dsp/README.md` | written — the safety stages' contracts and figures (D-012, D-013), the level detector's reading semantics and floors (D-014), threading, why the shell-level legs live elsewhere |
+| `src/Dsp` | `src/Dsp/README.md` | written — the safety stages' contracts and figures (D-012, D-013), the level detector's reading semantics and floors (D-014), the level normalizer's target, gate, limits and the ordering that keeps it feed-forward (D-015, D-016), threading, why the shell-level legs live elsewhere |
 | `src/Container` | `src/Container/README.md` | written — ring contract, capacity bound, threading |
-| `src/Engine` | `src/Engine/README.md` | written — engine seam, mix law (D-010) and its ramps (D-011), the two safety stages and their order (D-012, D-013), scheduler contract, ring sizing |
+| `src/Engine` | `src/Engine/README.md` | written — engine seam, mix law (D-010) and its ramps (D-011), the three optional stages and their chain order (D-012, D-013, D-016), scheduler contract, ring sizing, the channel rule and its silence sentinel (D-017) |
 | `src/Fft` | `src/Fft/README.md` | written — `IFft` contract, spectrum layout, normalisation, `multiplyHalfSpectrum`, threading |
 | `src/FftJuce` | `JuceFft.hpp` + D-006/F-003 | no separate README — the gain-calibration rationale lives in the decision log |
 | `src/Grain` | `src/Grain/README.md` | written — wet-path seam, time origin and gain, OLA order (F-005), threading, two-backend test layout |
@@ -377,6 +389,46 @@ code structure — describe the contract and let the code be the structure.
 
 ## 13. Current Gaps (re-verify before relying on these; fix, don't work around)
 
+* `engine::ChannelMap` is consumed, and so is the gate on top of it. `HopScheduler` resolves it into pointers
+  in `prepare` and the mono-main family's `kConsolidatedSource` is computed there — one pre-allocated mono hop
+  per step, the arithmetic mean of the sidechain's channels (2026-11-04,
+  `plan/M4-impl-plan/02-broadcast-resolution.md`), which also closed the heap overflow that sizing B scratch by
+  the processed count used to cause in a layout the shipped gate accepts (**F-014**). `engine::gateLayout`
+  (**D-021**, same day) is what `isBusesLayoutSupported` and `configureRings` both call, so a layout the rule
+  rejects is refused with a named reason rather than met with silence, and the `(1, chB 2…8, 1)` family is
+  host-reachable for the first time — `configureRings`' early return is still there because the callback must be
+  total, but §5.18 measures it unreachable from a layout a host can apply. The prepare-time cost the new family
+  implies was **measured, not bounded, on 2026-11-05 by design** (D-022 C — `tools/PrepareFootprint`: whole
+  shipped chain 760.7 KiB mono, 1024.4 KiB stereo, 1021.2 KiB at `(1, 8, 1)` at the default `L` = 8192, through
+  5.49 / 6.67 / 5.76 MiB with the grain cap unclamped at `H` = 512; the wide sidechain is +130 KiB of scheduler
+  and −133 KiB of engine against stereo, so it is not the expensive shape and no test asserts a byte limit).
+  Re-prepare is conditional since the same item (D-022 B: `engine::ReconfigureKey`'s seven fields compared in
+  `configureRings`, refusal and `releaseResources()` both clearing the stored key), so an unchanged layout
+  re-applied by a host no longer drops the running tail, and since 2026-11-08 it is **readable from outside the
+  class**: `EntangleAudioProcessor::layoutReport()` (D-023, M4 item 08) names what the plugin was *told* on one
+  `key=value` line — live bus counts and `getDescription()` per bus, the gate's verdict and rule, `processed`, `R`,
+  the hop, both `L` figures, the host block against `maxHostBlockFor`, `sidechainActive`, `effectiveBlend`, plus
+  `prepares=`/`skipped=` counting rebuilds against arrivals D-022 B's key declined — delivered to the editor's
+  `layoutReadout` and to `juce::Logger` behind a `MessageManager::existsAndIsCurrentThread()` test, with
+  `OfflineRender` §5.21 keeping it honest between host runs and `docs/host-layout-matrix.md` the place a host
+  answer goes. What the console settled for the surround half of D-021 B's third trigger is JUCE's own naming
+  (§5.21 C1b: 5.1 reports `5.1 Surround`, first-order ambisonic is a 4-channel set, and a **disabled bus reports
+  `Discrete #0`** because `isDiscreteLayout()` is tested before `disabled()`), plus the fact that
+  `MessageManager`'s constructor claims its constructing thread — so a harness that initialises JUCE's GUI passes
+  the guard on `main()` and only a genuinely other thread is silenced (F-018). What still stays open is the host
+  half, and it stays open because it cannot be closed here: **`docs/host-layout-matrix.md` has every row of H0–H8
+  open, because no host has ever loaded this plugin** — which hosts expose a wider-than-mono send, whether a send
+  can be enabled independently, what a host does with a refusal, and whether it shows the log line at all. The main
+  bus remains capped at 2 channels by a
+  deferral whose three triggers are in D-021 —
+  the memory one of which has now been answered with the figures above, leaving M7's cost curve and those host
+  rows — not by a rule of the design. Two consequences to keep in view: the fold's *audibility* is M9 row 2's, and its
+  measured level figure (+1.558 dB on the applied correction against a mono side, `OfflineRender` §5.17)
+  supersedes the −3 dB D-018 asserted arithmetically; and a wide sidechain fed an antiphase pair now folds to
+  exact zeros, falls through the normalizer's floor gate and leaves the wet path at unity — quiet and
+  uncorrected, disclosed in D-021, judged by M9. D-018 also retired M4 §1's commutativity property (F-013: once
+  the rule keys on the main bus, the swap relation has no non-trivial cases left), so do not write a test or
+  criterion on it; the surviving leg is named for the diagonal it is confined to.
 * `src/Entangle` internals are undocumented by design; the shell is being
   rebuilt around the seams in §9. Expect processor/editor contents to change
   completely.
@@ -386,6 +438,16 @@ code structure — describe the contract and let the code be the structure.
   default or its own endpoints, so the blend and gain dials are quantised to
   `1/128` and `0.125 dB` rather than the `0.01` the milestone text suggests
   (F-010). The arithmetic lives in JUCE; the workaround stays until it does not.
+* The level stage's audible settings are measured, not listened to. `defaultAmount`
+  = 1 ships the correction on every fresh instance, and the −60 dB floor, the
+  200 ms slew cap and the 20/100 ms envelope are console-harness figures — no
+  harness here can hear the pumping M3 §6 asks against. D-016's revisit triggers
+  (the wet response spanning 171 ms at the default `L`, and the follower bias that
+  stops cancelling once the buses carry different ripple) are what to check first
+  in a host. `plan/M9-preference-tweaks.md` now holds these as a queue (rows 3–5), with the
+  inter-channel-gain measurement (row 1) and the mono-main fold's audibility (row 2) placed in
+  front of any relinking decision — D-020 ships independent per-channel normalisation until one of
+  those closes on a named host.
 * `compose.yml` / `Dockerfile.dev` are Rust-era leftovers (Rust toolchain,
   Postgres client, `message-vault` naming) and build nothing here. The C++ build
   is verified on the host, not in that container.

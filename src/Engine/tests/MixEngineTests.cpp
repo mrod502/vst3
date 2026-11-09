@@ -1,6 +1,8 @@
 #include <DcBlocker.hpp>
 #include <Engine.hpp>
 #include <HopScheduler.hpp>
+#include <LevelDetector.hpp>
+#include <LevelNormalizer.hpp>
 #include <MixEngine.hpp>
 #include <SoftClipper.hpp>
 
@@ -10,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
 #include <memory>
 #include <new>
 #include <random>
@@ -376,6 +379,7 @@ Streams renderMix(Mix& mix, const Streams& a, const Streams& b, int hostBlock,
     schedulerConfig.channels = channels;
     schedulerConfig.sidechainChannels = channels;
     schedulerConfig.maxHostBlock = hostBlock;
+    schedulerConfig.map = engine::ChannelMap::resolve(channels, channels, channels).map;
 
     /* Poked before prepare so the coefficients snap onto the curve's starting value: what the ramp
        legs measure is the automation, not a move away from the class's own defaults. */
@@ -1170,6 +1174,7 @@ TEST_CASE("under HopScheduler both dry paths arrive at exactly the declared R")
             schedulerConfig.channels = 1;
             schedulerConfig.sidechainChannels = 1;
             schedulerConfig.maxHostBlock = kHostBlock;
+            schedulerConfig.map = engine::ChannelMap::resolve(1, 1, 1).map;
 
             engine::HopScheduler scheduler(engine);
             scheduler.prepare(schedulerConfig);
@@ -1223,6 +1228,57 @@ public:
 private:
     engine::EngineConfig config;
     float level;
+};
+
+/** A wet stream of deliberate DC on a tone: the fixture for the chain-ordering leg, where the DC is what a
+    level reading taken *before* the blocker inflates by. Both amplitudes arrive through the constructor
+    because the leg's whole point is the ratio between them, which has to be visible at the call site.
+
+    The sample counter continues across hops, so the tone has no boundary discontinuity. A per-hop restart
+    would give the wet stream a third ripple shape where the dry buses have one, and the follower bias that
+    cancels between the three readings (D-014) would stop cancelling for a reason that has nothing to do
+    with the ordering under proof. */
+class DcPlusToneWetEngine final : public engine::Engine
+{
+public:
+    /** 1 kHz at 48 kHz is exactly 48 samples per period — the fact that lets a DC residue be averaged out
+        of the render below, since a mean over a whole number of periods cancels the tone. */
+    static constexpr double kToneHz = 1000.0;
+
+    /** Distinct samples on each channel at identical levels, on the `SmoothWetEngine` precedent. */
+    static constexpr int kChannelOffset = 37;
+
+    DcPlusToneWetEngine(float dcToUse, float toneToUse) noexcept : dc(dcToUse), tone(toneToUse) {}
+
+    void prepare(const engine::EngineConfig& configToUse) override
+    {
+        config = configToUse;
+        position = 0;
+    }
+
+    void reset() override { position = 0; }
+
+    int latencySamples() const override { return config.latencySamples; }
+    int wetDelaySamples() const override { return config.grainLength; }
+
+    void processHop(const float* const*, const float* const*, float* const* out,
+                    int numChannels) override
+    {
+        const double step = 2.0 * M_PI * kToneHz / config.sampleRate;
+        for (int channel = 0; channel < numChannels; ++channel)
+            for (int i = 0; i < config.hop; ++i)
+                out[channel][i] = static_cast<float>(
+                    dc + tone * std::sin(step
+                                         * static_cast<double>(position + i
+                                                               + channel * kChannelOffset)));
+        position += config.hop;
+    }
+
+private:
+    engine::EngineConfig config;
+    float dc;
+    float tone;
+    int position = 0;
 };
 
 TEST_CASE("the DC blocker empties the convolved stream and never reaches a dry bus")
@@ -1325,6 +1381,442 @@ TEST_CASE("the clipper bounds the summed output, and reaches it through the gain
     quiet.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
     for (int i = 0; i < kHop; ++i)
         CHECK(out[0][static_cast<std::size_t>(i)] == 0.4f);
+}
+
+TEST_CASE("the level stage moves neither delay figure, allocates nothing, and cannot reach a dry bus")
+{
+    /* Criteria C1, C2 and C6's engine-level halves, and the order proof for item 04's decision B. The same
+       programme runs through the shipped chain and through the shipped chain plus the stage, at each settled
+       dial position: bit-equal at p = -1 and p = +1, different at p = 0. The endpoints are the load-bearing
+       pair — `coefWet` is exactly zero there, so any difference means the correction leaked onto a bus the
+       dial hands straight through, which is what installing the stage below the law rather than in the shell
+       is supposed to make impossible. The midpoint leg keeps that claim from being vacuous. */
+    const int channels = 2;
+    const Streams a = makeInputs(channels, kHop, 0);
+    const Streams b = makeInputs(channels, kHop, 5000);
+
+    struct Run
+    {
+        Streams out;
+        float peakGainDb = 0.0f;
+    };
+
+    const auto run = [channels, &a, &b](float dial, bool withStage) {
+        engine::MixEngine mix(std::make_unique<StubEngine>(), std::make_unique<dsp::DcBlocker>(),
+                              std::make_unique<dsp::SoftClipper>());
+        dsp::LevelNormalizer* stage = nullptr;
+        if (withStage)
+        {
+            auto installed = std::make_unique<dsp::LevelNormalizer>();
+            stage = installed.get();
+            mix.installLevelNormalizer(std::move(installed));
+        }
+        mix.setBlendTarget(dial);
+        mix.prepare(makeConfig(channels, 0));
+
+        Run result{zerosLike(a), 0.0f};
+        const Pointers p = pointersFor(a, b, result.out);
+        for (int call = 0; call < 400; ++call)
+        {
+            mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+            if (stage != nullptr)
+                result.peakGainDb = std::max(result.peakGainDb, std::abs(stage->gainDb(0)));
+        }
+        return result;
+    };
+
+    for (const float dial : {-1.0f, 1.0f})
+    {
+        const Run bare = run(dial, false);
+        const Run staged = run(dial, true);
+        INFO("dial " << dial << " with the stage at its defaults, peak |gain| " << staged.peakGainDb << " dB");
+        CHECK(staged.out == bare.out);
+    }
+
+    const Run wetBare = run(0.0f, false);
+    const Run wetStaged = run(0.0f, true);
+    bool anyDifference = false;
+    double loudestRatio = 1.0;
+    for (std::size_t channel = 0; channel < a.size(); ++channel)
+        for (std::size_t i = 0; i < a[channel].size(); ++i)
+        {
+            const float before = wetBare.out[channel][i];
+            const float after = wetStaged.out[channel][i];
+            anyDifference = anyDifference || before != after;
+            if (std::abs(before) > 1.0e-6f)
+                loudestRatio = std::max(loudestRatio, static_cast<double>(after) / before);
+        }
+    INFO("at p = 0 the wet bus moved by a peak ratio of " << loudestRatio << " with the hop gain reaching "
+                                                          << wetStaged.peakGainDb
+                                                          << " dB, so the endpoint claim above is not vacuous");
+    CHECK(anyDifference);
+    CHECK(wetStaged.peakGainDb > 0.0f);
+
+    auto stub = std::make_unique<StubEngine>();
+    StubEngine* observed = stub.get();
+    observed->declaredLatency = 96;
+    observed->wetDelay = 8 * kHop;
+    engine::MixEngine mix(std::move(stub), std::make_unique<dsp::DcBlocker>(),
+                          std::make_unique<dsp::SoftClipper>());
+    auto stage = std::make_unique<dsp::LevelNormalizer>();
+    dsp::LevelNormalizer* observedStage = stage.get();
+    mix.installLevelNormalizer(std::move(stage));
+    mix.prepare(makeConfig(channels, 96));
+
+    CHECK(mix.latencySamples() == 96);                              ///< C1: R is still the inner engine's
+    CHECK(mix.wetDelaySamples() == 8 * kHop);                       ///< C1: so is W
+    CHECK(observedStage->hopSamples() == kHop);                     ///< E: sized from the prepare-time H
+    CHECK(observedStage->windowSamples() == static_cast<std::size_t>(kHop));
+
+    const Streams streamsA = makeInputs(channels, kHop, 0);
+    const Streams streamsB = makeInputs(channels, kHop, 5000);
+    Streams out = zerosLike(streamsA);
+    const Pointers p = pointersFor(streamsA, streamsB, out);
+    long allocations = -1;
+    {
+        AllocationWatch watch;
+        for (int call = 0; call < 64; ++call)
+        {
+            mix.setNormalisationAmountTarget(static_cast<float>(call % 5) / 4.0f);
+            mix.setSilenceFloorTarget(-60.0f + static_cast<float>(call % 3));
+            mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+        }
+        allocations = allocationCount;
+    }
+    INFO(allocations << " allocations over 64 hops with the stage installed and both of its controls moving "
+                        "every hop; delay figures "
+                     << mix.latencySamples() << " and " << mix.wetDelaySamples()
+                     << " against the inner engine's 96 and " << 8 * kHop);
+    CHECK(allocations == 0);
+    CHECK(observed->hopCalls == 64);
+}
+
+namespace
+{
+/** The chain-ordering fixture's levels. Read *after* the blocker the stage asks for
+    20·log10(0.05 / 0.02) = 7.9588 dB, which `M4-impl-plan/07` §0 C rounds to +8 dB. Read *before* it the
+    conv reading carries the DC, and the same arithmetic asks for
+    20·log10(0.05 / √(0.08² + 0.01414²)) = −7.23 dB. The two orders are therefore 15.2 dB apart, which is
+    far outside any tolerance a reviewer would sign off on, and both of them sit inside the ±36 dB range,
+    so neither the clamp nor the slew cap can be the reason the leg goes red. */
+constexpr double kWetDcOffset = 0.08;
+constexpr double kWetToneAmplitude = 0.02;
+constexpr double kDryToneAmplitude = 0.05;
+
+/** The separation between the two orders above, which the run length has to outlast on top of the
+    blocker's own bound and the follower's release time. */
+constexpr double kOrderingSeparationDb = 15.0;
+
+/** One hop of the stage's window, in the millisecond unit `LevelDetector`'s constructor takes — the same
+    figure `LevelNormalizer::prepare` derives for each of its three detectors. */
+constexpr double kOrderingWindowMs = 1000.0 * static_cast<double>(kHop) / kSampleRate;
+
+/** Samples per period of the fixture's tone. A mean over a whole number of them cancels the tone, which
+    is the only way its DC residue is measurable at all: the tone does not fit the 128-sample hop, and a
+    one-hop mean of it is of order 0.1 — five orders of magnitude above the residue. */
+constexpr int kTonePeriodSamples = 48;
+static_assert(kSampleRate / DcPlusToneWetEngine::kToneHz == static_cast<double>(kTonePeriodSamples),
+              "the DC-residue window is only tone-free while the fixture's tone is a whole number of "
+              "samples per period at the rate the leg runs at");
+
+/** `samples` of the dry fixture: phase-continuous from sample 0 and carrying the wet stub's per-channel
+    offset, so all three of the stage's readings see the same ripple content and D-014's follower bias
+    cancels in the ratio instead of having to be allowed for. */
+Streams dryToneStream(int channels, int samples, double amplitude, double phase)
+{
+    Streams data(static_cast<std::size_t>(channels),
+                 std::vector<float>(static_cast<std::size_t>(samples)));
+    const double step = 2.0 * M_PI * DcPlusToneWetEngine::kToneHz / kSampleRate;
+    for (int channel = 0; channel < channels; ++channel)
+        for (int i = 0; i < samples; ++i)
+            data[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)] =
+                static_cast<float>(amplitude
+                                   * std::sin(step
+                                              * static_cast<double>(
+                                                  i + channel * DcPlusToneWetEngine::kChannelOffset)
+                                              + phase));
+    return data;
+}
+
+/** The pointer set `pointersFor` takes, lifted `offset` samples into each stream, so one long
+    phase-continuous fixture stream can be fed hop by hop instead of a fresh one-hop buffer per hop. */
+Pointers pointersAt(const Streams& a, const Streams& b, Streams& out, int offset)
+{
+    Pointers p;
+    for (std::size_t channel = 0; channel < a.size(); ++channel)
+    {
+        p.a.push_back(a[channel].data() + offset);
+        p.b.push_back(b[channel].data() + offset);
+        p.out.push_back(out[channel].data() + offset);
+    }
+    return p;
+}
+
+/** One variant of the chain: the DC-plus-tone stub behind the blocker, dial and gain settled before the
+    prepare so they are already at target on hop 0, and the level stage present only when asked. The
+    variants therefore differ by the stage and by nothing else. The stage is installed before the prepare it
+    has to precede and returned alongside, because its three readings are the evidence. */
+struct OrderingChain
+{
+    std::unique_ptr<engine::MixEngine> mix;
+    dsp::LevelNormalizer* stage = nullptr;
+};
+
+OrderingChain makeOrderingChain(int channels, float wetDc, bool withStage, float dial,
+                                float amount = 1.0f)
+{
+    OrderingChain built{std::make_unique<engine::MixEngine>(
+                            std::make_unique<DcPlusToneWetEngine>(wetDc, kWetToneAmplitude),
+                            std::make_unique<dsp::DcBlocker>(), nullptr),
+                        nullptr};
+    if (withStage)
+    {
+        auto stage = std::make_unique<dsp::LevelNormalizer>();
+        built.stage = stage.get();
+        built.mix->installLevelNormalizer(std::move(stage));
+    }
+    built.mix->setBlendTarget(dial);
+    built.mix->setOutputGainTarget(0.0f);
+    built.mix->prepare(makeConfig(channels, 96));
+    built.mix->setNormalisationAmountTarget(amount);
+    built.mix->setSilenceFloorTarget(-90.0f);
+    return built;
+}
+
+/** The DC residue of a render, averaged over a whole number of periods of the fixture's tone so the tone
+    cancels and only the offset is left: the tone does not fit the 128-sample hop, and a one-hop mean of it
+    is of order 0.1 — five orders of magnitude above the residue being looked for. */
+double dcResidueOverWholeTonePeriods(const Streams& stream, std::size_t channel, int samples,
+                                     int periods)
+{
+    double sum = 0.0;
+    for (int i = samples - periods * kTonePeriodSamples; i < samples; ++i)
+        sum += static_cast<double>(stream[channel][static_cast<std::size_t>(i)]);
+    return std::abs(sum / static_cast<double>(periods * kTonePeriodSamples));
+}
+
+/** Criteria 1 to 5 of `M4-impl-plan/07`, for one DC level on the wet path.
+
+    Variant A is the same chain with no level stage and the dial at the centre, where the law hands through
+    `coefWet · conv` with `coefWet` exactly 1.0f — so its render *is* the blocked stream. That is the
+    reference: the chain under test minus the stage, never a second implementation of the arithmetic being
+    proved. A bare `LevelDetector` carrying the stage's own constants is driven off variant A's render, hop
+    for hop, against the installed stage's `envelopeConv`.
+
+    `toleranceDb` is 1 dB with the DC in place and a tenth of that without it. The DC is what stops the
+    three readings sharing ripple content, and the follower bias cancels only while they do (D-016 finding
+    1), so the zero-DC control run is what proves the slack belongs to the fixture rather than to the leg. */
+void checkOrderingOfBlockerAndLevelStage(float wetDc, double toleranceDb)
+{
+    const int channels = 2;
+
+    /* Criterion 1. An assertion that lands mid-transient measures a step response instead of an ordering,
+       so the run is pinned against the three bounds it has to clear. The blocker's bound comes from a probe
+       prepared at the config's rate, because the injected stage is not prepared yet where the bound is
+       needed. */
+    dsp::DcBlocker blockerProbe;
+    blockerProbe.prepare(kSampleRate, channels);
+    const int blockerBound = blockerProbe.settlingSamples();
+    REQUIRE(blockerBound > 0);
+    const int releaseBound
+        = static_cast<int>(dsp::LevelNormalizer::releaseMs * kSampleRate * 0.001 + 0.5);
+    const double slewDbPerSecond
+        = 1000.0 * 2.0 * dsp::LevelNormalizer::gainRangeDb / dsp::LevelNormalizer::fullTravelMs;
+    const int slewBound = static_cast<int>(kOrderingSeparationDb / slewDbPerSecond * kSampleRate + 0.5);
+    const int runSamples = std::max(blockerBound, static_cast<int>(0.25 * kSampleRate + 0.5))
+                           + static_cast<int>(0.1 * kSampleRate + 0.5);
+    const int hops = (runSamples + kHop - 1) / kHop;
+
+    INFO("run " << hops << " hops = " << hops * kHop << " samples, which has to outlast the blocker's "
+                << blockerBound << ", the follower's release at " << releaseBound << ", and "
+                << kOrderingSeparationDb << " dB of gain travel at " << slewDbPerSecond
+                << " dB/s = " << slewBound);
+    REQUIRE(runSamples > blockerBound);
+    REQUIRE(runSamples > releaseBound);
+    REQUIRE(runSamples > slewBound);
+    std::cout << "  ordering leg, wet DC " << wetDc << ": " << hops << " hops / " << hops * kHop
+              << " samples against bounds blocker " << blockerBound << ", release " << releaseBound
+              << ", slew " << slewBound << ", tolerance " << toleranceDb << " dB\n";
+
+    /* Every chain gets its own copy of the same two fixtures. `processHop` may not write A or B — that is
+       the Engine contract — but a mutation that breaks that rule and filters the caller's buffers in place
+       is one of the things the endpoint assertions below are for, and a buffer shared between the chains
+       would have those assertions compare a mutated reference against itself and call it a pass. */
+    const auto fixtureA = [channels, samples = hops * kHop] {
+        return dryToneStream(channels, samples, kDryToneAmplitude, 0.0);
+    };
+    const auto fixtureB = [channels, samples = hops * kHop] {
+        return dryToneStream(channels, samples, kDryToneAmplitude, M_PI / 2.0);
+    };
+
+    const Streams a = fixtureA();
+    const Streams b = fixtureB();
+
+    /* The pair no chain is ever handed, which is what the endpoint comparison below is against. */
+    const Streams masterA = fixtureA();
+    const Streams masterB = fixtureB();
+
+    OrderingChain bare = makeOrderingChain(channels, wetDc, false, 0.0f);
+    Streams blocked = zerosLike(a);
+    for (int hop = 0; hop < hops; ++hop)
+    {
+        const Pointers p = pointersAt(a, b, blocked, hop * kHop);
+        bare.mix->processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+    }
+
+    OrderingChain staged = makeOrderingChain(channels, wetDc, true, 0.0f);
+    REQUIRE(staged.stage != nullptr);
+
+    /* Criterion 6's halves: neither the stage nor the blocker is a delay line, and the stub declares both
+       figures, so the install cannot move either. */
+    REQUIRE(bare.mix->latencySamples() == 96);
+    REQUIRE(bare.mix->wetDelaySamples() == 8 * kHop);
+    CHECK(staged.mix->latencySamples() == 96);
+    CHECK(staged.mix->wetDelaySamples() == 8 * kHop);
+
+    dsp::LevelDetector reference(kOrderingWindowMs, dsp::LevelNormalizer::attackMs,
+                                 dsp::LevelNormalizer::releaseMs);
+    reference.prepare(kSampleRate, channels);
+
+    Streams out = zerosLike(a);
+    const Streams stagedA = fixtureA();
+    const Streams stagedB = fixtureB();
+    double worstReadingGap = 0.0;
+    for (int hop = 0; hop < hops; ++hop)
+    {
+        const Pointers p = pointersAt(stagedA, stagedB, out, hop * kHop);
+        staged.mix->processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+
+        /* The reference consumes variant A's hop in the same order and the same chunk the stage's conv
+           detector consumed its own, so the two readings are comparable from here on. */
+        for (int channel = 0; channel < channels; ++channel)
+            reference.processChannel(static_cast<std::size_t>(channel),
+                                     blocked[channel].data() + hop * kHop,
+                                     static_cast<std::size_t>(kHop));
+        if (hop == 0)
+            continue;
+
+        /* Criterion 2 — the tight half of the leg. In this order the stage and the reference are the same
+           samples through the same detector class, so anything above float noise means the stage is being
+           fed something other than the blocked stream. */
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            const std::size_t ch = static_cast<std::size_t>(channel);
+            const float stageReading = staged.stage->envelopeConv(ch);
+            const float referenceReading = reference.envelope(ch);
+            worstReadingGap = std::max(worstReadingGap,
+                                       static_cast<double>(std::abs(stageReading - referenceReading)));
+            INFO("hop " << hop << " ch " << channel << ": the stage reads " << stageReading
+                        << " on conv, a bare detector on variant A's hop reads " << referenceReading);
+            CHECK(std::abs(stageReading - referenceReading) <= 1.0e-6f);
+        }
+    }
+    std::cout << "    worst gap between the stage's conv reading and the bare detector over hops 1 to "
+              << hops - 1 << ": " << worstReadingGap << '\n';
+
+    const double predictedDb = 20.0 * std::log10(kDryToneAmplitude / kWetToneAmplitude);
+    for (int channel = 0; channel < channels; ++channel)
+    {
+        const std::size_t ch = static_cast<std::size_t>(channel);
+        const double envA = staged.stage->envelopeA(ch);
+        const double envB = staged.stage->envelopeB(ch);
+        const double envConv = staged.stage->envelopeConv(ch);
+        const double impliedDb = 20.0 * std::log10(std::sqrt(envA * envB) / envConv);
+        const double appliedDb = staged.stage->gainDb(ch);
+
+        /* Criterion 3, in two halves so a failure names which one moved: the applied gain against the one
+           the stage's own final readings imply — which is also the proof the slew cap has finished
+           travelling — and that figure against the one the blocked stream implies. The allowance is
+           D-014's +0.65 dB follower bias plus margin, which is what the control run tightens. */
+        INFO("ch " << channel << ": applied " << appliedDb << " dB, implied " << impliedDb
+                   << " dB from envA " << envA << ", envB " << envB << ", envConv " << envConv
+                   << "; the fixture predicts " << predictedDb << " dB (M4 07 §0 C's +8 dB), allowance "
+                   << toleranceDb << " dB for the follower bias where the three readings do not share "
+                   << "ripple content");
+        CHECK(std::abs(appliedDb - impliedDb) <= toleranceDb);
+        CHECK(std::abs(impliedDb - predictedDb) <= toleranceDb);
+        std::cout << "    ch " << channel << ": applied " << appliedDb << " dB, implied " << impliedDb
+                  << " dB, fixture predicts " << predictedDb << " dB\n";
+    }
+
+    /* Criterion 4's first half: the blocker still has to be doing its job underneath the correction.
+
+       The residue is measured on the staged chain with `amount` at 0, which is bit-exact identity through
+       the stage, and not on the corrected render — a correction to §4 criterion 4, recorded in the plan's
+       §11. Any time-varying gain under the average leaks the fixture's own tone into it: the same
+       96-sample mean taken on the corrected stream measures 2.2e-02 at hop 5 of the DC run and 6.1e-07 at
+       hop 80, against 1.3e-10 here. That is the follower's settling tail rather than DC, and it sits over
+       the 1e-6 bound on correct code, so a residue leg on the corrected stream would be a function of when
+       the run ends rather than of whether the blocker works. At amount 0 the hop gain is exactly 1.0f at
+       every sample, so what is left in the mean is the blocker's own residue. */
+    OrderingChain identity = makeOrderingChain(channels, wetDc, true, 0.0f, 0.0f);
+    const Streams identityA = fixtureA();
+    const Streams identityB = fixtureB();
+    Streams identityOut = zerosLike(identityA);
+    for (int hop = 0; hop < hops; ++hop)
+    {
+        const Pointers p = pointersAt(identityA, identityB, identityOut, hop * kHop);
+        identity.mix->processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+    }
+    for (int channel = 0; channel < channels; ++channel)
+    {
+        const std::size_t ch = static_cast<std::size_t>(channel);
+        const double stagedResidue = dcResidueOverWholeTonePeriods(identityOut, ch, hops * kHop, 3);
+        const double referenceResidue = dcResidueOverWholeTonePeriods(blocked, ch, hops * kHop, 3);
+        INFO("ch " << channel << ": DC residue " << stagedResidue << " through the chain with the stage at"
+                   << " amount 0 and " << referenceResidue << " on the blocked reference, both averaged "
+                   << "over the last " << 3 * kTonePeriodSamples << " samples");
+        CHECK(stagedResidue <= 1.0e-6);
+        CHECK(referenceResidue <= 1.0e-6);
+        std::cout << "    ch " << channel << ": DC residue " << stagedResidue
+                  << " staged at unity, " << referenceResidue << " on the blocked reference\n";
+    }
+
+    /* Criterion 4's second half: D-010's endpoints under a stage that a later M4 rewrite might be tempted
+       to move. `coefWet` is exactly zero at either endpoint, so the dry bus arrives bit for bit — against
+       the master copy, which no chain ever saw, because a chain that filtered the caller's A bus in place
+       would otherwise be compared with its own handiwork and called exact. */
+    for (const float dial : {-1.0f, 1.0f})
+    {
+        OrderingChain endpoint = makeOrderingChain(channels, wetDc, true, dial);
+        const Streams endpointA = fixtureA();
+        const Streams endpointB = fixtureB();
+        Streams endpointOut = zerosLike(endpointA);
+        for (int hop = 0; hop < 4; ++hop)
+        {
+            const Pointers p = pointersAt(endpointA, endpointB, endpointOut, hop * kHop);
+            endpoint.mix->processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+        }
+        const Streams& want = dial < 0.0f ? masterA : masterB;
+        for (int channel = 0; channel < channels; ++channel)
+            for (int i = 0; i < 4 * kHop; ++i)
+            {
+                INFO("dial " << dial << " ch " << channel << " i " << i << ": staged endpoint "
+                             << endpointOut[channel][static_cast<std::size_t>(i)] << " against "
+                             << want[channel][static_cast<std::size_t>(i)]);
+                CHECK(endpointOut[channel][static_cast<std::size_t>(i)]
+                      == want[channel][static_cast<std::size_t>(i)]);
+            }
+    }
+}
+}
+
+TEST_CASE("level stage runs after the DC blocker")
+{
+    /* The one M3 invariant no leg held: inside `MixEngine::processHop` the DC blocker has to run on the
+       convolved stream *before* the level stage reads it. M3's mutation 10 swapped the two loops and found
+       nothing red anywhere, because the blocker still removes the DC before the host sees it either way —
+       the residue is zero in both orders, so what differs is the gain the stage computes against a
+       DC-inflated reading, not what reaches the output. The witness is therefore the reading and the
+       applied gain, on a wet stream carrying DC at exactly the ratio that turns the two orders into a
+       15 dB disagreement — a wiring proof, not program material, and nobody should read a pass here as
+       "the normalizer sounds right on DC-heavy input". */
+    checkOrderingOfBlockerAndLevelStage(static_cast<float>(kWetDcOffset), 1.0);
+
+    /* Criterion 5's control: no DC, everything else identical. The three readings now share ripple
+       content, the follower bias cancels, and both comparisons above hold to a tenth of a dB — which is
+       what keeps the DC run's 1 dB allowance from being the leg's own imprecision. */
+    checkOrderingOfBlockerAndLevelStage(0.0f, 0.1);
 }
 
 TEST_CASE("the safety stages move neither delay figure and allocate nothing on the hop path")

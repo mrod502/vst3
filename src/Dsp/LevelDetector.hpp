@@ -12,10 +12,11 @@ namespace dsp
     attack/release envelope, all live at once. M3 §4 item 1's detector.
 
     Measurement only (D-014). No target, no floor, no gate, no gain, no idea which bus it is pointed
-    at — every one of those is the normalizer's decision and all of them are still open
-    (`plan/M3-impl-plan/INDEX.md` §9). Both candidate measurement schemes stay available because
-    choosing between them is open too: the windowed pair measures something as long as a grain or as
-    short as a hop, the envelope is the smoothed alternative.
+    at — every one of those is the caller's decision, and `dsp::LevelNormalizer` is the caller that took
+    them: D-015 for the target and the driving reading, D-016 for the gate, the floor and the limits.
+    Both candidate measurement schemes stay available because the rejected one stays live on the same
+    object: the windowed pair measures something as long as a grain or as short as a hop, the envelope is
+    the smoothed alternative the normalizer reads.
 
     All three readings are in the same amplitude domain as the input — 1.0 is whatever 1.0 is at the
     input — and all three are defined to be *correct*, not merely bounded:

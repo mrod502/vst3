@@ -7,7 +7,8 @@ struct EngineConfig
 {
     double sampleRate = 0.0;
     int hop = 0;            ///< H, the internal step in samples.
-    int maxChannels = 0;    ///< Channel capacity the Engine must be ready for.
+    int maxChannels = 0;    ///< Channel capacity the Engine must be ready for: the processed count,
+                            ///  never a bus width — a narrow side is resolved before the seam (M4 §5).
     int latencySamples = 0; ///< Declared delay R; see D-004.
     int grainLength = 0;    ///< L, the analysis window length. 0 where the engine has none.
 };
@@ -45,6 +46,13 @@ public:
         @param b  @p numChannels pointers of config.hop samples; silence where the
                   sidechain has no channel (D-002).
         @param out @p numChannels pointers of config.hop samples, not aliased with a or b.
+
+        Either input side may be narrower than @p numChannels: the caller resolves the layout into
+        these pointers before the seam (M4 §5), so one pointer may appear in several slots — a
+        broadcast side repeats its channel 0, and a consolidated side hands over one mean pointer
+        (D-018). Reading a repeated pointer from two slots is part of the contract: an Engine writes
+        only `out`, and per-channel state is keyed by channel index rather than by address, so shared
+        reads still get independent per-channel decisions.
     */
     virtual void processHop(const float* const* a, const float* const* b,
                             float* const* out, int numChannels) = 0;

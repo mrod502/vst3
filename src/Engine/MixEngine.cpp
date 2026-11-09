@@ -1,6 +1,7 @@
 #include "MixEngine.hpp"
 
 #include <DcBlocker.hpp>
+#include <LevelNormalizer.hpp>
 #include <SoftClipper.hpp>
 
 #include <algorithm>
@@ -39,6 +40,8 @@ void MixEngine::prepare(const EngineConfig& configToUse)
     inner->prepare(configToUse);
     if (wetBlocker != nullptr)
         wetBlocker->prepare(config.sampleRate, config.maxChannels);
+    if (levelNormalizer != nullptr)
+        levelNormalizer->prepare(config.sampleRate, config.maxChannels, config.hop);
 
     blendRamp.length = rampLengthSamples(blendRampMs, config.sampleRate);
     gainRamp.length = rampLengthSamples(outputGainRampMs, config.sampleRate);
@@ -73,6 +76,8 @@ void MixEngine::reset()
     inner->reset();
     if (wetBlocker != nullptr)
         wetBlocker->reset();
+    if (levelNormalizer != nullptr)
+        levelNormalizer->reset();
     snapRamps();
 }
 
@@ -99,6 +104,27 @@ void MixEngine::setOutputGainTarget(float decibels) noexcept
 void MixEngine::setBypassTarget(bool bypassed) noexcept
 {
     bypassRamp.retarget(bypassed ? 0.0f : 1.0f);
+}
+
+void MixEngine::installLevelNormalizer(std::unique_ptr<dsp::LevelNormalizer> stage) noexcept
+{
+    /* Asserting on the prepare that already happened rather than on the stage pointer: config holds the
+       rate and hop the stage would have to have been sized for, so a re-install that would silently keep
+       the old hop is caught by the same test. */
+    assert(config.sampleRate <= 0.0 && "installLevelNormalizer must run before prepare");
+    levelNormalizer = std::move(stage);
+}
+
+void MixEngine::setNormalisationAmountTarget(float amount) noexcept
+{
+    if (levelNormalizer != nullptr)
+        levelNormalizer->setAmount(amount);
+}
+
+void MixEngine::setSilenceFloorTarget(float floorDb) noexcept
+{
+    if (levelNormalizer != nullptr)
+        levelNormalizer->setFloorDb(floorDb);
 }
 
 void MixEngine::fillCoefficients() noexcept
@@ -147,6 +173,17 @@ void MixEngine::processHop(const float* const* a, const float* const* b, float* 
         for (int channel = 0; channel < numChannels; ++channel)
             wetBlocker->processChannel(static_cast<std::size_t>(channel),
                                        scratchPtrs[static_cast<std::size_t>(channel)], hop);
+    }
+
+    /* Then the level stage, on the blocked stream and before the law (item 04 decision B): after the
+       blocker, so DC cannot inflate the reading it corrects for, and before the sum, so `coefWet`'s exact
+       zero at |p| = 1 still hands through the dry bus untouched. It scales scratch in place and reads A and
+       B here, inside the hop seam, where Engine's contract guarantees `out` is not aliased with either. */
+    if (levelNormalizer != nullptr)
+    {
+        for (int channel = 0; channel < numChannels; ++channel)
+            levelNormalizer->processChannel(static_cast<std::size_t>(channel), a[channel], b[channel],
+                                            scratchPtrs[static_cast<std::size_t>(channel)], hop);
     }
 
     fillCoefficients();

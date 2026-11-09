@@ -10,6 +10,7 @@
 namespace dsp
 {
 class DcBlocker;
+class LevelNormalizer;
 class SoftClipper;
 }
 
@@ -56,12 +57,17 @@ inline MixWeights mixLawWeights(float p) noexcept
     is never additionally delayed, and the law contributes no gain of its own — the inner engine's
     own wet scale stays the whole wet gain table.
 
-    Two optional safety stages wrap the law, in the order M3 item 2 decision C fixes: the DC blocker
-    shapes `conv` before the law sees it, and the soft clipper bounds the summed output after the
-    gain, so driving the gain harder is limited rather than unbounded. Both are absent unless they
-    are handed in, and a stage that is not installed is not applied at all — that is how the harness
-    renders the same chain as engine physics and as what ships. Neither one touches a dry bus, moves
-    R or W, or allocates on the process path.
+    Three optional stages wrap the law, in the order M3 items 2 and 4 fix: the DC blocker shapes `conv`
+    before anything else looks at it, the level normalizer holds that blocked stream at `√(envA · envB)`
+    (D-015) before the law sees it, and the soft clipper bounds the summed output after the gain, so
+    driving the gain harder is limited rather than unbounded. All three are absent unless they are handed
+    in, and a stage that is not installed is not applied at all — that is how the harness renders the same
+    chain as engine physics, as what ships, and as what ships minus one stage. None of them touches a dry
+    bus, moves R or W, or allocates on the process path.
+
+    The normalizer is the one stage installed by a setter rather than a constructor argument, because it
+    runs *before* the last of the two stages the constructor already orders: a fourth positional argument
+    reading `(blocker, clipper, normalizer)` would say the opposite of what the chain does.
 
     The three targets are written on the thread that calls processHop, by the shell reading its
     parameter state; nothing here is shared across threads, so no lock is taken. prepare and reset
@@ -93,7 +99,7 @@ public:
               std::unique_ptr<dsp::DcBlocker> wetBlocker,
               std::unique_ptr<dsp::SoftClipper> outputClipper) noexcept;
 
-    /** Defined where the two stage types are, because both members are unique_ptrs of them. */
+    /** Defined where the stage types are, because every stage member is a unique_ptr of them. */
     ~MixEngine() override;
 
     void prepare(const EngineConfig&) override;
@@ -113,6 +119,21 @@ public:
 
     /** Bypass is a crossfade onto the dry A path, so it switches no routing and cannot move R. */
     void setBypassTarget(bool bypassed) noexcept;
+
+    /** Puts the level stage between the DC blocker and the law — decision B's slot, the only one where
+        the reading is the engine's own output level and the dry buses stay untouched.
+
+        Install before `prepare`, which is asserted: the stage is sized for the hop there, so installing
+        after it would leave a stage that never ran or a hop it was never sized for. A stage that is not
+        installed is not applied at all, exactly as for the other two. */
+    void installLevelNormalizer(std::unique_ptr<dsp::LevelNormalizer> stage) noexcept;
+
+    /** Forwarded to the level stage, which reads it at the next hop boundary. No-ops with no stage
+        installed, so the shell and the harness can push the same targets at every variant. */
+    void setNormalisationAmountTarget(float amount) noexcept;
+
+    /** Silence floor in dBFS, forwarded to the level stage. See `setNormalisationAmountTarget`. */
+    void setSilenceFloorTarget(float floorDb) noexcept;
 
 private:
     /** A straight line between two values over a fixed number of samples.
@@ -167,6 +188,7 @@ private:
 
     std::unique_ptr<Engine> inner;
     std::unique_ptr<dsp::DcBlocker> wetBlocker;
+    std::unique_ptr<dsp::LevelNormalizer> levelNormalizer;
     std::unique_ptr<dsp::SoftClipper> outputClipper;
     EngineConfig config;
 

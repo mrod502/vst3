@@ -54,7 +54,7 @@ vst3/                      # CMake project "vstplug", C++23
 │   ├── FftJuce/           # the one JUCE-aware IFft adapter (calibrated engine gain, D-006)
 │   ├── Grain/             # mode 1 wet path: GrainHistory, OlaAccumulator, window/gain, GrainConvolutionEngine (JUCE-light)
 │   └── Entangle/          # JUCE plugin shell — INTENTIONALLY UNDOCUMENTED (§12)
-├── tools/                 # OfflineRender (offline harness), CpuBaseline (M7 cost data), PrepareFootprint (D-022 C memory figures)
+├── tools/                 # harness/ (shared plugin-seam library + the alloc tripwire), OfflineRender (the monolith on top of it), CpuBaseline (M7 cost data), PrepareFootprint (D-022 C memory figures)
 ├── cmake/                 # EntangleTestFramework.cmake — test-framework wiring (D-005)
 ├── juce/                  # submodule: juce-framework/juce @ >= 9.0.4
 ├── plan/                  # roadmap docs, not part of this index
@@ -71,7 +71,11 @@ Targets present after a configure (`cmake --build build/release --target help`):
 | `Dsp` | Static library for `src/Dsp` — `dsp::DcBlocker` (5 Hz Butterworth HP, D-013), `dsp::SoftClipper` (+6 dB ceiling, D-012), `dsp::LevelDetector` (windowed RMS/peak plus an attack/release envelope, D-014) and `dsp::LevelNormalizer` (the `√(envA · envB)` level stage: gate, ±36 dB, 360 dB/s slew, D-015/D-016). JUCE-light, links nothing but the assert switch. |
 | `Container` | Static library for `src/Container` (`container::CircularBuffer`). |
 | `Engine` | Static library for `src/Engine` (engine seam + `MixEngine` + `HopScheduler` + the header-only `ChannelMap`, D-017, the header-only `LayoutGate`, D-021, and the header-only `ReconfigureKey`, D-022); links `Container` + `Dsp`. |
-| `OfflineRender` | Console harness that renders through the plugin's shared code; registered with CTest. **§5.20 is the channel matrix** (M4 item 06): ten cells — nine of the twelve gate-accepted triples plus `(1,5,1)` re-run at the shipped shape — each through a literal mapping table checked against `resolve`, geometry, shell identity, three block plans, A-side and B-side independence per mapped source, and the dry path; then three family legs (the two asymmetric resolutions each matching their own model, the level stage confined to one channel with the stage live, and the fold's reciprocal at `chB` ∈ {2,3,5,8}). 93 `ok` lines of its own at 0.9 s on its own clock; no product code. **§5.21 is the layout report** (M4 item 08, D-023): 28 lines checking every field of a real `layoutReport()` against an authority outside it for the twelve accepted triples, JUCE's own words for eleven bus shapes, the `prepares=`/`skipped=` counters against what `configureRings` was asked to do, a refused layout moving neither the report's configuration fields nor the running render, and the log guard on both of its branches — run last, because it swaps the installed `juce::Logger` for a counting one, which is why `main()` installs a filter that keeps §5.1…§5.20's output byte-identical to the pre-report baseline. |
+| `EntangleHarnessCore` | JUCE-light half of the shared plugin-seam harness (M5 item 01), extracted verbatim out of `OfflineRender`'s translation unit: `Stream`, `kSampleRate`/`kMaxBlock`/`kDeltaTolerance`/`kWetRecoveryTolerance`, the three `Shape`s, **11 generators** (the four that moved — `noiseStream`, `constantStream`, `impulseStream`, `singleImpulse` — plus seven seeded ones: `silenceStream`, `sineStream`, `chirpStream`, `squareStream`, `dcOffsetStream`, `poisonStream`, `speechLikeStream`), the block-plan helpers and the eight metrics. Links `Dsp` for `fractionAboveKnee`'s knee constant and nothing else, so every generator and fuzz leg stays a console program (§9); `EntangleAsserts` is `PRIVATE` because `-UNDEBUG` must never reach an includer of a JUCE header. |
+| `EntangleHarnessShell` | JUCE-linked half: the nine `BusSetup` layouts, the 11 drivers, the five render routes, `renderAt`, the three expectations — each with the optional `FailDump` that writes the offending stream and nothing else — `writeWav`, and `ReportLogFilter`. It **links** `vstplug` and adds no shell `.cpp` of its own, so the shell a leg renders and the plugin a VST3 bundle loads are the same object code — a rule the build file holds, not the linker: `01` §5 arm 10 added a shell `.cpp` to this library, and it linked with both binaries still green, because the harness archive is scanned before the plugin's and the plugin's copy is never pulled (**F-020**). |
+| `EntangleAllocWatch` | INTERFACE target carrying `AllocWatch.hpp` plus `entangle_enable_alloc_watch(<target>)`, which appends the one `AllocWatchShim.cpp` TU to one binary. Calling it twice for one target is a **silent no-op** — CMake keeps one entry per source path, measured 2026-11-11: the second call leaves the build graph byte-identical (`ninja: no work to do`) and the link line names the shim once — so exactly-once needs no linker check, and what stays a duplicate-symbol error is a *second, different* `operator new` replacement reaching the same binary. The six light shims stay where they are for that reason and another: pointing them here would hand a `vstplug` dependency to code whose purpose is not having one. |
+| `ShellTests` | The first Catch2 program that drives the shell (§10): 7 cases, every name prefixed `"harness: "`, all at hop 512 / `L` 1024 so the binary runs in well under its 10 s budget — shell identity against `renderReference`, block-plan invariance, the dry path delayed by exactly `R`, both halves of seed reproducibility for the six seeded generators, the failure dump off and on, and the tripwire's count-one and count-none controls. Owns its `main()` (GUI initialiser claiming the message thread, F-018; the whole-run log filter; the `Logger` teardown order; `--dump-wavs`), which is why it compiles Catch2's amalgamated TU with `CATCH_AMALGAMATED_CUSTOM_MAIN=1` instead of linking `EntangleCatch2`. |
+| `OfflineRender` | Console harness that renders through the plugin's shared code; registered with CTest. Its 35 shared helpers moved to `tools/harness` in M5 item 01 and it keeps its 21 sections and its byte-identical output — the diff against the pre-extraction baseline is empty except its eleven duration lines. **§5.20 is the channel matrix** (M4 item 06): ten cells — nine of the twelve gate-accepted triples plus `(1,5,1)` re-run at the shipped shape — each through a literal mapping table checked against `resolve`, geometry, shell identity, three block plans, A-side and B-side independence per mapped source, and the dry path; then three family legs (the two asymmetric resolutions each matching their own model, the level stage confined to one channel with the stage live, and the fold's reciprocal at `chB` ∈ {2,3,5,8}). 93 `ok` lines of its own at 0.9 s on its own clock; no product code. **§5.21 is the layout report** (M4 item 08, D-023): 28 lines checking every field of a real `layoutReport()` against an authority outside it for the twelve accepted triples, JUCE's own words for eleven bus shapes, the `prepares=`/`skipped=` counters against what `configureRings` was asked to do, a refused layout moving neither the report's configuration fields nor the running render, and the log guard on both of its branches — run last, because it swaps the installed `juce::Logger` for a counting one, which is why `main()` installs a filter that keeps §5.1…§5.20's output byte-identical to the pre-report baseline. |
 | `ContainerTests`, `EngineTests` | Catch2 console test programs (§10). `EngineTests` is the scheduler's suite: the original ten cases (exactness, hop clock, latency pre-fill, no-alloc) plus M4 item 02's eight — broadcast reaching the Engine as one repeated B pointer, the mono-main fold as an exact mean at `chB` ∈ {2,3,4,8} over four side patterns with the A side of the same hop checked for non-interference, the `kConsolidatedSource` marker rather than its index selecting the fold, silence on every processed slot when the sidechain is absent, a prepare that takes every map the rule resolves and throws on an index outside its side, hostBlock invariance for both new shapes, and no allocation for either the broadcast or the fold. 18 cases / 2 257 172 assertions. |
 | `DspTests` | Catch2 console program for all four classes (§10): corner, DC residue, passband flatness, chunk and channel invariance, the clipper's identity/monotonicity/ceiling/non-finite rules, the detector's settling values, time constants, rate invariance, exact silence and 60 s drift, and the normalizer's geometric-mean target, half-slope, amount-as-exponent identity, upstream reading, floor gate, ±36 dB clamp, time-not-per-hop slew cap, return to exact unity, poisoned-channel count and zero-allocation hop path. One binary — the allocation-counting legs replace global `operator new`, so it must stay the only one in the directory, and `ctest -R` filters these by case name, not by target name. |
 | `MixEngineTests` | Catch2 program for `engine::MixEngine` and the mix law (§10); its own binary because it replaces global `operator new` to prove the hop path does not allocate, which `EngineTests` already does. Covers the installed level stage's delay figures, zero allocation and inability to reach a dry bus, and the chain-ordering leg that proves the level stage reads the stream *after* the DC blocker — a DC-on-tone wet stub, the stage's own conv reading compared hop-for-hop against a bare detector on the same samples, and the applied gain compared against what the blocked stream implies (M4 item 07, closing D-016's last untested invariant). |
@@ -95,10 +99,13 @@ The console apps do not land beside their targets: `OfflineRender` is at
 `build/<config>/tools/OfflineRender_artefacts/Release/OfflineRender` and `PrepareFootprint` at
 `build/<config>/tools/PrepareFootprint_artefacts/Release/PrepareFootprint` — both are
 `juce_add_console_app`, so each gets its own `_artefacts` directory — while `CpuBaseline` is a plain
-`add_executable` at `build/<config>/tools/CpuBaseline`, so a direct run of the first through a guessed path
+`add_executable` at `build/<config>/tools/CpuBaseline` and `ShellTests` a plain `add_executable` at
+`build/<config>/tools/harness/tests/ShellTests`, so a direct run of the first through a guessed path
 fails with 127. Prefer `ctest --test-dir build/<config> -R OfflineRender --output-on-failure`, which knows where
 it went and prints the section log on failure. `PrepareFootprint` is not in CTest, so it has to be run by that
-path, and it prints its host line before any figure.
+path, and it prints its host line before any figure. `ShellTests` is in CTest but its dump half is not: that leg
+`SKIP`s unless the binary is run directly with `--dump-wavs`, so the dump path is decided by a direct run and the
+skip is the honest state of every other run.
 Generated plugin bundles land under
 `build/<config>/src/Entangle/vstplug_artefacts/{VST3,Standalone}/`, or under
 `vstplug_artefacts/Debug/` when the cache carries `CMAKE_BUILD_TYPE=Debug`. The segment
@@ -140,7 +147,8 @@ text you actually read. Never guess at file contents or line numbers, and
 re-read after the edit to confirm it landed where you intended.
 
 For JUCE work, load the matching skill from `.qwen/skills` (§15) before writing or
-changing code in that area; they are not part of this file's context.
+changing code in that area; they are not part of this file's context. For work on the
+plans themselves, the six `plan-*` skills are §16.
 
 ## 4. Build and Validation
 
@@ -334,7 +342,20 @@ library, discovered by `catch_discover_tests` and run with
   already taken by the third-party submodule scheduled for removal, so
   `FetchContent_MakeAvailable(Catch2)` collides. This repo builds its own pinned
   `EntangleCatch2` target from the amalgamated sources
-  (`cmake/EntangleTestFramework.cmake`, decision D-005).
+  (`cmake/EntangleTestFramework.cmake`, decision D-005). A binary that must own its
+  `main()` — `ShellTests`, for the message thread, the logger and `--dump-wavs` —
+  compiles the same amalgamated source with `CATCH_AMALGAMATED_CUSTOM_MAIN=1`; still
+  one Catch2 per program.
+* **A case name is the only filter this repo has, and a filtered run that matched
+  nothing is a failed run, not a green one.** `ctest -R OfflineRender` and
+  `ctest -R ShellTests` select zero tests and **exit 0**; target names are not test
+  names. Filter on the case-name prefix that names the item and quote the pass count
+  with the exit status, every time. The prefixes are a contract, and the two run sets
+  are selected with them: quick = `ctest --test-dir build/<config> -E OfflineRender`
+  (every Catch2 case, `"harness: "` included), long = `OfflineRender` itself plus
+  whatever an item marks long. `OfflineRender` stays one case — it is a section log,
+  not a suite — and `ShellTests`' dump leg `SKIP`s without `--dump-wavs`, so a
+  `Skipped` line there is expected and a silently-missing case is not.
 * **A behaviour change ships with a test, or with a written reason it cannot be
   tested.** "Awkward" is not that reason; "needs a host clock" usually is.
 * **Tests run as plain console programs** — the payoff of the JUCE-light rule in
@@ -429,6 +450,14 @@ code structure — describe the contract and let the code be the structure.
   uncorrected, disclosed in D-021, judged by M9. D-018 also retired M4 §1's commutativity property (F-013: once
   the rule keys on the main bus, the swap relation has no non-trivial cases left), so do not write a test or
   criterion on it; the surviving leg is named for the diagonal it is confined to.
+* `OfflineRender` is still one CTest case. M5 item 01 lifted its 35 shared helpers into `tools/harness`
+  (`EntangleHarnessCore`, JUCE-light; `EntangleHarnessShell`, linking `vstplug`) and put the first shell-driving
+  Catch2 binary beside it — `ShellTests`, 7 `"harness: "` cases, the first test outside the monolith ever to call
+  `createPluginFilter()` — so a new shell leg has a selectable, individually-timed home and the milestone's "do
+  not grow `OfflineRender`" rule has somewhere to be followed. What is still open is the other side of that: 21
+  sections and 204 measurements stay in the monolith, and migrating a section is a later M5 item's decision with
+  its own mutation proof, not a move this item was entitled to make (`plan/M5-impl-plan/INDEX.md` §3 rule 2). The
+  tripwire mechanism exists (`EntangleAllocWatch`); the verdict about the shell's hop path is M5 item 06's.
 * `src/Entangle` internals are undocumented by design; the shell is being
   rebuilt around the seams in §9. Expect processor/editor contents to change
   completely.
@@ -483,6 +512,28 @@ Seams between them: choosing a processor is `juce-dsp-processing`, speeding up a
 already wrote is `juce-vector-operations`, and a control that misbehaves in the UI is still
 `juce-apvts-parameters`. All five are JUCE-side guidance — none of it belongs in `src/Dsp`
 or `src/Container` (§9).
+
+## 16. Planning Skills Index — `.qwen/skills/plan-*`
+
+Six references for the milestone plans under `plan/` (§2: not indexed, open only when asked).
+They encode how this repo plans rather than how JUCE works, and they are what a
+`plan/M*-impl-plan/` index and its item files are written against — the current instance is
+`plan/M5-impl-plan/`. Load them before writing or amending a plan, in the order the work
+arrives: thesis → requirements → criteria → validation → tracking → visualisation.
+
+| Skill | Use it when |
+|---|---|
+| `plan-thesis-validation` | Before a milestone's first item: the thesis stated falsifiably, its premises inventoried and disproved against the tree, and the known-bad case a new metric must flag. Where "generalise X across N channels" gets checked for already-done. |
+| `plan-requirements-refinement` | Milestone prose becoming items: three scope lists (in / out / out-and-standing), split by file or seam rather than by paragraph, the `Covers` mapping, the decisions table marked answered / needs-an-answer / blocked, the parked table. |
+| `plan-acceptance-criteria` | A criterion reads as an adjective, or a green suite would prove nothing: the proposition-plus-the-run grammar, the exactness ladder (bit-exact → exactly `0.0f` → `1e-5·peak` → measured figure → recorded-not-gated), the falsification half of every criterion, the domain check that strikes criteria which lost their cases. |
+| `plan-test-validation` | Running a campaign whose green means something: mutation arms with predictions, equivalent-mutant bookkeeping, byte-identity baselines with a named permitted-diff set, determinism in both halves, allocation tripwires (one replaced `operator new` per program), and the four traps that print green over red. |
+| `plan-work-tracking` | Keeping the index honest over many sessions: the five statuses and each one's basis condition, claim-before-code, the decision-number ledger, evidence rows carrying command / build type / date / figure, append-only corrections, the close-out pass. |
+| `plan-visualization` | The dependency diagram and any figure in a plan: the validated state palette (`templates/palette.md`), shape = kind with fill + glyph = status, edges that carry reasons, and the templates `templates/dependency-chart.mmd` and `templates/coverage-matrix.md`. A colour change there must clear the dataviz validator in both modes. |
+
+Two seams worth naming: a criterion is not a test plan (`plan-acceptance-criteria` writes the proposition,
+`plan-test-validation` runs the campaign that decides it), and the item map is the authority while the diagram is a
+view of it (`plan-work-tracking` owns the row, `plan-visualization` owns its colour and its shape). None of the six
+touches JUCE; §10's testing standard still governs the code they describe.
 
 ---
 

@@ -1,0 +1,20 @@
+{
+  "cpp": {
+    "command": "clangd",
+    "args": [
+      "--background-index",
+      "--clang-tidy",
+      "--header-insertion=iwyu",
+      "--completion-style=detailed"
+    ],
+    "extensionToLanguage": {
+      ".c": "c",
+      ".h": "cpp",
+      ".cpp": "cpp",
+      ".hpp": "cpp",
+      ".cc": "cpp",
+      ".cxx": "cpp"
+    }
+  }
+}
+

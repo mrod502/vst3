@@ -1,0 +1,41 @@
+flowchart TD
+    classDef done fill:#3f9d5c,color:#0b1220,stroke:#1d5c33;
+    classDef record fill:#8f6fc4,color:#0b1220,stroke:#5b3f8c;
+    classDef wip fill:#d0821f,color:#0b1220,stroke:#96590f;
+    classDef blocked fill:#d05a52,color:#0b1220,stroke:#963a34,stroke-width:2px;
+    classDef todo fill:#4f86c6,color:#0b1220,stroke:#365f92;
+    classDef context fill:#7b8794,color:#0b1220,stroke:#5b6673,stroke-dasharray:5 4;
+
+    PREV["▢ PRIOR MILESTONE closed · the one line that matters here"]:::context
+    HOST["▢ open rows nobody can close here · say why, in the label"]:::context
+
+    i01["✓ 01 · first item<br/>what it delivers, plus its cost if known"]:::done
+    i02["○ 02 · second item<br/>one clause"]:::todo
+    i03["○ 03 · third item<br/>one clause"]:::todo
+    i04["▶ 04 · item in progress<br/>one clause"]:::wip
+    i05["✕ 05 · blocked item<br/>blocker named HERE, not only in the table"]:::blocked
+
+    dA{"▢ §6 row N<br/>the decision, in one line"}:::context
+    dB{"▣ §6 row N · answered<br/>what the measurement said"}:::record
+
+    GATE["▢ the gate · one command, nonzero exit<br/>how its sets are selected"]:::context
+    NEXT["▢ NEXT MILESTONE · what this one hands on"]:::context
+
+    PREV -->|"cells and legs extended,<br/>never re-derived"| i02
+    PREV -->|"the legs re-pointed at the new seam"| i03
+    i01 -->|"what 02 needs from it"| i02
+    i01 --> i03
+    i01 -->|"the shared fixture, if that is the reason"| i04
+    dA -->|"gates the shape of the metric"| i04
+    dB -.->|"answered 2026-01-01 by measurement"| i05
+    i02 --> i04
+    i02 --> GATE
+    i03 --> GATE
+    i04 --> GATE
+    i05 --> GATE
+    HOST -.->|"never gates a leg"| GATE
+    GATE --> NEXT
+
+    LEGEND["✓ measured · ▣ closed on record · ▶ in progress<br/>✕ blocked · ○ not started · ▢ context"]
+    classDef legendbox fill:none,stroke:none,color:#0b1220;
+    class LEGEND legendbox

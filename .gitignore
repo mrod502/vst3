@@ -55,3 +55,22 @@
 
 /plan
 /design
+
+# Assistant scratch. Everything written under .qwen/tmp is generated working
+# material — captured run output, comparison baselines, one-use scripts, and the
+# TMPDIR the LTO link needs — none of it source of truth. The rest of .qwen/
+# (skills, agents, settings) is deliberate repo content and stays tracked.
+/.qwen/tmp/
+
+# Ad-hoc captures and crash artefacts, wherever a debugging run drops them.
+/*.log
+*.bak
+*.orig
+*.rej
+/core
+/core.*
+*.dmp
+asan.log*
+ubsan.log*
+__pycache__/
+*.pyc

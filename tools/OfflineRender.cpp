@@ -92,781 +92,105 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-#include <MixEngine.hpp>
-#include <GrainEngine.hpp>
-#include <HopScheduler.hpp>
 #include <DcBlocker.hpp>
 #include <LayoutGate.hpp>
 #include <LevelNormalizer.hpp>
 #include <SoftClipper.hpp>
 
+#include <HarnessShell.hpp>
+#include <HarnessStream.hpp>
+
 #include "EngineChain.h"
 #include "EntangleProcessor.h"
-#include "JuceTransformFactory.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <exception>
-#include <functional>
 #include <limits>
-#include <memory>
-#include <random>
 #include <thread>
 #include <vector>
 
-/** Defined by the plugin's shared code, which this harness links rather than recompiling. */
-juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter();
-
 namespace
 {
-constexpr double kSampleRate = 48000.0;
-constexpr int kMaxBlock = 4096;
-
-/** The library's tolerance, unchanged: an IFFT of a spectral product leaves ~1e-8 where the exact
-    result is zero and the OLA ring carries that residue onward. Against a response peak of 1.0 it
-    reads as absolute. */
-constexpr double kDeltaTolerance = 1e-5;
-
-/** How far the wet-minus-dry reconstruction of §5.5 has to be trusted: the shell sums wet into the
-    dry stream in float, so recovering it costs ~2 ulp of the dry sample it was added to. */
-constexpr double kWetRecoveryTolerance = 1e-6;
-
-using Stream = std::vector<std::vector<float>>;
-
-struct Shape
-{
-    int hop;
-    int chosen; ///< the dial position; the running L is the shell's clamp of it
-};
-
-constexpr Shape kDefault{128, 8192};    ///< both UI defaults
-constexpr Shape kTightest{512, 1024};   ///< L = 2H, the least overlap the UI can express
-constexpr Shape kLongest{512, 65536};   ///< top of the set, where §4.6's tail number lives
-
-struct BusSetup
-{
-    const char *name;
-    juce::AudioChannelSet mainSet;
-    bool withSidechain;
-    /** The sidechain bus's shape when `withSidechain` is set. Stereo for every setup that predates
-        M4 item 03 — which is what keeps `applyLayout` meaning the same thing to those legs as it did
-        before it had a field to look at. Refusal probes do not come through here: `applyLayout` fails
-        the harness on a rejected layout, which is right for a render leg and wrong for a refusal. */
-    juce::AudioChannelSet sideSet;
-};
-
-/* juce::AudioChannelSet is not a literal type, so these are const rather than constexpr. */
-const BusSetup kStereoWithB{"stereo-with-b", juce::AudioChannelSet::stereo(), true,
-                            juce::AudioChannelSet::stereo()};
-const BusSetup kStereoNoB{"stereo-no-b", juce::AudioChannelSet::stereo(), false,
-                          juce::AudioChannelSet::stereo()};
-const BusSetup kMonoNoB{"mono-no-b", juce::AudioChannelSet::mono(), false,
-                        juce::AudioChannelSet::stereo()};
-/* The family D-021 A makes host-selectable: a mono main whose sidechain is wider than the main, which
-   resolves to one consolidated channel. Stereo here reproduces the shape §5.17 measures through the
-   builder; the 8-wide variant is the ceiling, and the only one no leg could reach before this item. */
-const BusSetup kMonoWithB{"mono-with-b", juce::AudioChannelSet::mono(), true,
-                          juce::AudioChannelSet::stereo()};
-const BusSetup kMonoWithEightB{"mono-with-8-b", juce::AudioChannelSet::mono(), true,
-                               juce::AudioChannelSet::discreteChannels(8)};
-/* The four shapes §5.20's matrix needs and no leg above used: the whole broadcast family — the mono main
-   with one sidechain channel and the stereo main with one, which had never reached a sample anywhere —
-   and two of the consolidated widths the matrix samples (odd non-dyadic 1/3 and 1/5; 2 and 8 are already
-   above). §5.20 reads them through its own cell table, which carries the expected mapping next to each. */
-const BusSetup kMonoWithMonoB{"mono-with-1-b", juce::AudioChannelSet::mono(), true,
-                              juce::AudioChannelSet::mono()};
-const BusSetup kStereoWithMonoB{"stereo-with-1-b", juce::AudioChannelSet::stereo(), true,
-                                juce::AudioChannelSet::mono()};
-const BusSetup kMonoWithThreeB{"mono-with-3-b", juce::AudioChannelSet::mono(), true,
-                               juce::AudioChannelSet::discreteChannels(3)};
-const BusSetup kMonoWithFiveB{"mono-with-5-b", juce::AudioChannelSet::mono(), true,
-                              juce::AudioChannelSet::discreteChannels(5)};
-
-std::unique_ptr<juce::AudioProcessor> makeProcessor()
-{
-    return std::unique_ptr<juce::AudioProcessor>(createPluginFilter());
-}
-
-EntangleAudioProcessor &shellOf(juce::AudioProcessor &processor)
-{
-    return static_cast<EntangleAudioProcessor &>(processor);
-}
-
-int indexOfHop(int hop)
-{
-    for (int index = 0; index < static_cast<int>(EntangleAudioProcessor::hopValues.size()); ++index)
-        if (EntangleAudioProcessor::hopValues[static_cast<std::size_t>(index)] == hop)
-            return index;
-    return -1;
-}
-
-int indexOfLength(int length)
-{
-    for (int index = 0; index < static_cast<int>(EntangleAudioProcessor::grainLengthValues.size());
-         ++index)
-        if (EntangleAudioProcessor::grainLengthValues[static_cast<std::size_t>(index)] == length)
-            return index;
-    return -1;
-}
-
-bool setChoice(juce::AudioProcessor &processor, const juce::String &parameterId, int index)
-{
-    auto *choice = dynamic_cast<juce::AudioParameterChoice *>(
-        shellOf(processor).apvts.getParameter(parameterId));
-    if (choice == nullptr)
-    {
-        std::cout << "  FAIL no choice parameter named " << parameterId << "\n";
-        return false;
-    }
-    *choice = index; ///< notifies the host, exactly as a host poke would
-    return true;
-}
-
-template <typename Parameter, typename Value>
-bool setParameter(juce::AudioProcessor &processor, const juce::String &parameterId, Value value,
-                  const char *kind)
-{
-    auto *parameter = dynamic_cast<Parameter *>(shellOf(processor).apvts.getParameter(parameterId));
-    if (parameter == nullptr)
-    {
-        std::cout << "  FAIL no " << kind << " parameter named " << parameterId << "\n";
-        return false;
-    }
-    *parameter = value; ///< notifies the host, exactly as a host poke would
-    return true;
-}
-
-bool setFloat(juce::AudioProcessor &processor, const juce::String &parameterId, float value)
-{
-    return setParameter<juce::AudioParameterFloat>(processor, parameterId, value, "float");
-}
-
-bool setBool(juce::AudioProcessor &processor, const juce::String &parameterId, bool value)
-{
-    return setParameter<juce::AudioParameterBool>(processor, parameterId, value, "bool");
-}
-
-/** The parameter's denormalised value straight out of the APVTS, for a leg that has to compare what
-    a state load produced rather than what a render sounded like. */
-float parameterValue(juce::AudioProcessor &processor, const juce::String &parameterId)
-{
-    auto *raw = shellOf(processor).apvts.getRawParameterValue(parameterId);
-    return raw != nullptr ? raw->load() : std::numeric_limits<float>::quiet_NaN();
-}
-
-bool applyLayout(juce::AudioProcessor &processor, const BusSetup &bus)
-{
-    auto layout = processor.getBusesLayout();
-    layout.getChannelSet(true, 0) = bus.mainSet;
-    layout.getChannelSet(false, 0) = bus.mainSet;
-    layout.getChannelSet(true, 1) =
-        bus.withSidechain ? bus.sideSet : juce::AudioChannelSet::disabled();
-    if (!processor.setBusesLayout(layout))
-    {
-        std::cout << "FAIL " << bus.name << ": layout rejected\n";
-        return false;
-    }
-    return true;
-}
-
-bool configure(juce::AudioProcessor &processor, const BusSetup &bus, const Shape &shape)
-{
-    if (!applyLayout(processor, bus))
-        return false;
-    if (!setChoice(processor, EntangleAudioProcessor::hopParameterId, indexOfHop(shape.hop)))
-        return false;
-    if (!setChoice(processor, EntangleAudioProcessor::grainLengthParameterId,
-                   indexOfLength(shape.chosen)))
-        return false;
-
-    processor.setRateAndBufferSizeDetails(kSampleRate, kMaxBlock);
-    processor.prepareToPlay(kSampleRate, kMaxBlock);
-    return true;
-}
-
-Stream noiseStream(int channels, int samples, unsigned seed, float amplitude)
-{
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<float> spread(-amplitude, amplitude);
-    Stream data(static_cast<std::size_t>(channels),
-                std::vector<float>(static_cast<std::size_t>(samples)));
-    for (int channel = 0; channel < channels; ++channel)
-        for (int i = 0; i < samples; ++i)
-            data[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)] = spread(rng);
-    return data;
-}
-
-Stream constantStream(int channels, int samples, float value)
-{
-    return Stream(static_cast<std::size_t>(channels),
-                  std::vector<float>(static_cast<std::size_t>(samples), value));
-}
-
-Stream impulseStream(int channels, int samples, int at)
-{
-    Stream data(static_cast<std::size_t>(channels),
-                std::vector<float>(static_cast<std::size_t>(samples), 0.0f));
-    for (int channel = 0; channel < channels; ++channel)
-        data[static_cast<std::size_t>(channel)][static_cast<std::size_t>(at)] = 1.0f;
-    return data;
-}
-
-/** The same material with one channel lit and the rest exactly zero.
-
-    `impulseStream` writes an impulse into every channel at once, which is why no leg above it can
-    localise a response to one source channel — the whole content of M4 §7's independence row. §5.20's
-    M4 and M5 legs feed one channel at a time from here. */
-Stream singleImpulse(int channels, int samples, int channel, int at)
-{
-    Stream data(static_cast<std::size_t>(channels),
-                std::vector<float>(static_cast<std::size_t>(samples), 0.0f));
-    data[static_cast<std::size_t>(channel)][static_cast<std::size_t>(at)] = 1.0f;
-    return data;
-}
-
-/** Block sequences summing to exactly `total`, so two renders of one stream line up sample for
-    sample instead of by luck — the old harness rendered whatever its block list happened to sum
-    to, which silently capped how large an L the delta test could address.
-
-    Zero-length callbacks stay in: they are what exercise the drain accounting. Pattern 0 is the
-    M1 list plus a seeded random run, pattern 1 is {1, 4, 4096}. */
-std::vector<int> blocksSummingTo(int total, int pattern)
-{
-    std::vector<int> blocks;
-    int remaining = total;
-    auto push = [&blocks, &remaining](int wanted) {
-        if (remaining <= 0)
-            return;
-        const int taken = std::min(wanted, remaining);
-        blocks.push_back(taken);
-        remaining -= taken;
-    };
-
-    if (pattern == 0)
-    {
-        for (const int size : {1, 7, 32, 64, 128, 512, 1000, 2048, 4096})
-        {
-            blocks.push_back(0);
-            push(size);
-        }
-        std::mt19937 rng(20261022U);
-        std::uniform_int_distribution<int> random(kMaxBlock / 4, kMaxBlock);
-        while (remaining > 0)
-        {
-            blocks.push_back(0);
-            push(random(rng));
-        }
-    }
-    else
-    {
-        while (remaining > 0)
-            for (const int size : {1, 4, 4096})
-            {
-                blocks.push_back(0);
-                push(size);
-            }
-    }
-
-    blocks.push_back(0);
-    blocks.push_back(0);
-    return blocks;
-}
-
-/** A uniform callback list: `total` in `size`-sample callbacks, remainder last, no zero-length entries.
-
-    §5.19's local `blocksOf` is `blocksSummingTo(total, 0)` under another name, so the file had no uniform
-    plan until §5.20's third block plan asked for one: a steady 512-sample callback is the case the two
-    ragged lists cannot separate from the DSP's own hop, and it is the shape a host actually runs. */
-std::vector<int> constantBlocks(int total, int size)
-{
-    std::vector<int> blocks;
-    for (int remaining = total; remaining > 0; remaining -= size)
-        blocks.push_back(std::min(size, remaining));
-    return blocks;
-}
-
-int totalOf(const std::vector<int> &blocks)
-{
-    int total = 0;
-    for (int block : blocks)
-        total += block;
-    return total;
-}
-
-/** Feeds a whole stream through the processor as host callbacks, with a gesture applied to the
-    shell's parameters before every callback.
-
-    Channels are laid out the way AudioProcessor::getChannelIndexInProcessBlockBuffer wants them:
-    main input at 0, sidechain after it, main output aliasing the main input — so this also
-    exercises the ingest-then-drain order the scheduler depends on.
-
-    One reset(), before the first block: a sweep is one continuous transport, and re-priming the
-    rings each callback would measure the latency pre-fill instead of the ramps a gesture drives.
-    §5.19 passes `resetFirst = false`: a leg that measures what a mid-session re-prepare leaves
-    behind cannot start by re-priming the rings itself.
-
-    The bus counts are read inside the loop, not once, because a §5.19 gesture changes the layout
-    mid-transport: a host hands every callback a buffer sized to the layout in force at that
-    callback, and under-provisioning one would have the plugin read past the end of the harness's
-    own buffer. `in` and `sideIn` must therefore cover the *widest* phase of the render — the plugin
-    reads only what its current layout asks for, so an extra row is ignored rather than a hole.
-    `outputRows` grows the captured stream past the count at entry, which is what a render that ends
-    wider than it started needs; rows the plugin did not write are not compared by any caller. */
-template <class Gesture>
-Stream renderSwept(juce::AudioProcessor &processor, const Stream &in, const Stream *sideIn,
-                   const std::vector<int> &blocks, Gesture gesture, bool resetFirst = true,
-                   int outputRows = 0)
-{
-    const int rows = std::max(processor.getChannelCountOfBus(true, 0), outputRows);
-
-    Stream out(static_cast<std::size_t>(rows),
-               std::vector<float>(static_cast<std::size_t>(totalOf(blocks)),
-                                  std::numeric_limits<float>::quiet_NaN()));
-
-    juce::MidiBuffer midi;
-    int position = 0;
-    int callback = 0;
-    if (resetFirst)
-        processor.reset(); ///< each pass is a fresh transport, so the rings must start pre-filled
-
-    for (const int samples : blocks)
-    {
-        /* The gesture runs before the counts are read, so a callback that changes the layout is filled and
-           measured as the layout that is in force for it. Sized first, the switching callback hands the new
-           configuration the old layout's buffers — a 2-processed scheduler draining into a 1-channel output —
-           and segfaults inside HopScheduler::process. Every other leg's gesture leaves the counts alone, so
-           this ordering only matters to §5.19. */
-        gesture(callback);
-        ++callback;
-
-        const int mainChannels = processor.getChannelCountOfBus(true, 0);
-        const int sideChannels = processor.getChannelCountOfBus(true, 1);
-        const int bufferChannels = std::max(processor.getTotalNumInputChannels(),
-                                            processor.getTotalNumOutputChannels());
-
-        juce::AudioBuffer<float> buffer(bufferChannels, samples);
-        for (int channel = 0; channel < mainChannels; ++channel)
-            for (int i = 0; i < samples; ++i)
-                buffer.setSample(channel, i,
-                                 in[static_cast<std::size_t>(channel)]
-                                    [static_cast<std::size_t>(position + i)]);
-        // Always written, so a connected-but-unfed sidechain reaches the plugin as silence rather
-        // than as uninitialised memory.
-        for (int channel = 0; channel < sideChannels; ++channel)
-            for (int i = 0; i < samples; ++i)
-                buffer.setSample(mainChannels + channel, i,
-                                 sideIn != nullptr
-                                     ? (*sideIn)[static_cast<std::size_t>(channel)]
-                                                [static_cast<std::size_t>(position + i)]
-                                     : 0.0f);
-
-        processor.processBlock(buffer, midi);
-
-        const int captured = std::min(rows, processor.getTotalNumOutputChannels());
-        for (int channel = 0; channel < captured; ++channel)
-            for (int i = 0; i < samples; ++i)
-                out[static_cast<std::size_t>(channel)][static_cast<std::size_t>(position + i)] =
-                    buffer.getSample(channel, i);
-        position += samples;
-    }
-
-    return out;
-}
-
-Stream render(juce::AudioProcessor &processor, const Stream &in, const Stream *sideIn,
-              const std::vector<int> &blocks)
-{
-    return renderSwept(processor, in, sideIn, blocks, [](int) {});
-}
-
-/** The three parameters the shell reads on every callback, as a reference render should run them. */
-struct MixSetting
-{
-    float dial = 0.0f;
-    float gainDb = 0.0f;
-    bool bypass = false;
-    /** The level stage's two controls, at the shell's own defaults so a leg that says nothing about
-        them runs what ships. Both setters no-op on a variant with no stage installed, so every
-        variant takes the same pushes and a leg cannot compare two chains by construction. */
-    float normalisationAmount = dsp::LevelNormalizer::defaultAmount;
-    float floorDb = dsp::LevelNormalizer::defaultFloorDb;
-};
-
-/** The shipped chain with no shell in it, built by the same builder the shell calls
-    (entangle::makeChain) at the configuration the shell is configured to. §5.1 — anything the
-    shell converts, delays or gains shows up here and nowhere else. Composing the chain a second way
-    would stop this comparing against what ships, which is why the builder is shared.
-
-    The variant is part of the leg's identity, not a switch on convenience: M3 item 2 criterion C1
-    requires every leg to say which chain it runs on, because an anchor measured through a chain that
-    has quietly gained a high-pass no longer pins the engine's gain. */
-Stream renderReference(const Shape &shape, const Stream &a, const Stream &b, int channels,
-                       int sidechainChannels, const std::vector<int> &blocks,
-                       const MixSetting &mix = {},
-                       entangle::ChainVariant variant = entangle::ChainVariant::Shipped)
-{
-    static const JuceTransformFactory factory; ///< outlives every engine built below it
-    auto wet = entangle::makeChain(factory, variant);
-
-    entangle::ChainConfig chain;
-    chain.sampleRate = kSampleRate;
-    chain.hop = shape.hop;
-    chain.grainLength = EntangleAudioProcessor::clampGrainLength(shape.chosen, shape.hop);
-    chain.channels = channels;
-    chain.sidechainChannels = sidechainChannels;
-    chain.outputChannels = channels;
-    chain.maxHostBlock = EntangleAudioProcessor::maxHostBlockFor(kMaxBlock);
-
-    const engine::SchedulerConfig config = entangle::makeSchedulerConfig(chain);
-    /* The resolved count, not the bus width: for every configuration the harness drives today the two
-        agree, and writing the pointer arrays from the map is what keeps this harness resolving the way
-        the product does rather than by index (EngineChain.h's "one builder, two callers"). */
-    const int processed = config.map.channels;
-
-    /* Targets before prepare so the coefficients snap onto them, then again on every callback — the
-        order EntangleAudioProcessor uses in configureRings and processBlock. A static setting makes
-        the two identical; the point of mirroring it is that a moving one stays comparable. */
-    const float effectiveDial = entangle::effectiveBlend(mix.dial, sidechainChannels > 0);
-    wet->setBlendTarget(effectiveDial);
-    wet->setOutputGainTarget(mix.gainDb);
-    wet->setBypassTarget(mix.bypass);
-    wet->setNormalisationAmountTarget(mix.normalisationAmount);
-    wet->setSilenceFloorTarget(mix.floorDb);
-
-    engine::HopScheduler scheduler(*wet);
-    scheduler.prepare(config);
-    scheduler.reset();
-
-    const int total = totalOf(blocks);
-    Stream out(static_cast<std::size_t>(processed),
-               std::vector<float>(static_cast<std::size_t>(total),
-                                  std::numeric_limits<float>::quiet_NaN()));
-
-    int position = 0;
-    for (const int samples : blocks)
-    {
-        wet->setBlendTarget(effectiveDial);
-        wet->setOutputGainTarget(mix.gainDb);
-        wet->setBypassTarget(mix.bypass);
-        wet->setNormalisationAmountTarget(mix.normalisationAmount);
-        wet->setSilenceFloorTarget(mix.floorDb);
-
-        /* Source pointers in, processed pointers out, exactly as the shell hands over its bus arrays:
-           the scheduler is what turns the map into the repeated pointer (broadcast) or the folded mean,
-           so a harness that pre-resolved by index would be comparing something the product never runs. */
-        std::vector<const float *> aPtrs(static_cast<std::size_t>(channels));
-        std::vector<const float *> bPtrs(static_cast<std::size_t>(sidechainChannels));
-        std::vector<float *> outPtrs(static_cast<std::size_t>(processed));
-        for (int channel = 0; channel < channels; ++channel)
-            aPtrs[static_cast<std::size_t>(channel)] =
-                a[static_cast<std::size_t>(channel)].data() + position;
-        for (int channel = 0; channel < sidechainChannels; ++channel)
-            bPtrs[static_cast<std::size_t>(channel)] =
-                b[static_cast<std::size_t>(channel)].data() + position;
-        for (int channel = 0; channel < processed; ++channel)
-            outPtrs[static_cast<std::size_t>(channel)] =
-                out[static_cast<std::size_t>(channel)].data() + position;
-
-        scheduler.process(aPtrs.data(),
-                          sidechainChannels > 0 ? bPtrs.data() : nullptr, outPtrs.data(),
-                          processed, samples);
-        position += samples;
-    }
-    return out;
-}
-
-/** The wet stream alone — the grain engine with no law in front of it — which is what the shell
-    renders at the dial's centre, where the dry weight is exactly 0 and the wet weight exactly 1. */
-Stream renderPureWet(const Shape &shape, const Stream &a, const Stream &b, int channels,
-                     int sidechainChannels, const std::vector<int> &blocks)
-{
-    static const JuceTransformFactory factory;
-    grain::GrainConvolutionEngine wet(factory);
-
-    entangle::ChainConfig chain;
-    chain.sampleRate = kSampleRate;
-    chain.hop = shape.hop;
-    chain.grainLength = EntangleAudioProcessor::clampGrainLength(shape.chosen, shape.hop);
-    chain.channels = channels;
-    chain.sidechainChannels = sidechainChannels;
-    chain.outputChannels = channels;
-    chain.maxHostBlock =
-        std::max(kMaxBlock, EntangleAudioProcessor::maxHostBlockSamples);
-
-    const engine::SchedulerConfig config = entangle::makeSchedulerConfig(chain);
-    const int processed = config.map.channels;
-
-    engine::HopScheduler scheduler(wet);
-    scheduler.prepare(config);
-    scheduler.reset();
-
-    const int total = totalOf(blocks);
-    Stream out(static_cast<std::size_t>(processed),
-               std::vector<float>(static_cast<std::size_t>(total), 0.0f));
-
-    int position = 0;
-    for (const int samples : blocks)
-    {
-        std::vector<const float *> aPtrs(static_cast<std::size_t>(channels));
-        std::vector<const float *> bPtrs(static_cast<std::size_t>(sidechainChannels));
-        std::vector<float *> outPtrs(static_cast<std::size_t>(processed));
-        for (int channel = 0; channel < channels; ++channel)
-            aPtrs[static_cast<std::size_t>(channel)] =
-                a[static_cast<std::size_t>(channel)].data() + position;
-        for (int channel = 0; channel < sidechainChannels; ++channel)
-            bPtrs[static_cast<std::size_t>(channel)] =
-                b[static_cast<std::size_t>(channel)].data() + position;
-        for (int channel = 0; channel < processed; ++channel)
-            outPtrs[static_cast<std::size_t>(channel)] =
-                out[static_cast<std::size_t>(channel)].data() + position;
-
-        scheduler.process(aPtrs.data(),
-                          sidechainChannels > 0 ? bPtrs.data() : nullptr, outPtrs.data(),
-                          processed, samples);
-        position += samples;
-    }
-    return out;
-}
-
-/* The two safety stages re-applied by hand to a raw wet stream, in decision C's order: block the
-   convolved samples, fold the law's centre coefficient in, clip last.
-
-   Duplicated from MixEngine::processHop on purpose. Criterion C3 endorses a by-hand reference so the
-   shipped chain can still be asserted against something independent, and names the risk that comes
-   with it: if the engine's stage order changes and this copy does not, §5.1 — which runs the shell
-   against the real builder — is the leg that says so. The blocker is fed a whole channel in one call;
-   criterion A6 proves its state advances one sample at a time, so a hop-by-hop feed yields the same
-   samples. */
-Stream shapedBySafetyStages(const Stream &raw, float gainDb, bool blockDc, bool clip)
-{
-    Stream out = raw;
-    dsp::DcBlocker blocker;
-    if (blockDc)
-        blocker.prepare(kSampleRate, static_cast<int>(out.size()));
-    dsp::SoftClipper clipper;
-    const float gain = static_cast<float>(std::pow(10.0, static_cast<double>(gainDb) / 20.0));
-
-    for (std::size_t channel = 0; channel < out.size(); ++channel)
-    {
-        auto &samples = out[channel];
-        if (blockDc)
-            blocker.processChannel(channel, samples.data(), samples.size());
-        if (gain != 1.0f)
-            for (auto &sample : samples)
-                sample = gain * sample;
-        if (clip)
-            clipper.processChannel(samples.data(), samples.size());
-    }
-    return out;
-}
-
-/** The DC component of a render: the largest |mean| over the last `window` samples of any channel,
-    which is the spectral DC bin the wet path would carry. Reported over a settled tail rather than
-    the whole render, because the head of every pass here is silence. */
-double dcComponentOf(const Stream &stream, std::size_t window)
-{
-    double worst = 0.0;
-    for (const auto &channel : stream)
-    {
-        if (channel.empty())
-            continue;
-        const std::size_t from = window < channel.size() ? channel.size() - window : 0;
-        double sum = 0.0;
-        for (std::size_t i = from; i < channel.size(); ++i)
-            sum += static_cast<double>(channel[i]);
-        worst = std::max(worst, std::abs(sum / static_cast<double>(channel.size() - from)));
-    }
-    return worst;
-}
-
-/** The level a settled stream is actually held at: RMS over the last `window` samples of each
-    channel, in the same units as the samples. The head of every pass here is silence and the level
-    stage spends its first 200 ms travelling, which is why this is a tail window and not the render. */
-std::vector<double> settledRms(const Stream &stream, std::size_t window)
-{
-    std::vector<double> rms;
-    rms.reserve(stream.size());
-    for (const auto &channel : stream)
-    {
-        const std::size_t from = window < channel.size() ? channel.size() - window : 0;
-        double sum = 0.0;
-        for (std::size_t i = from; i < channel.size(); ++i)
-            sum += static_cast<double>(channel[i]) * static_cast<double>(channel[i]);
-        rms.push_back(channel.size() > from
-                          ? std::sqrt(sum / static_cast<double>(channel.size() - from))
-                          : 0.0);
-    }
-    return rms;
-}
-
-/** How much of a render the clipper is actually shaping — the fraction B7 asks for, where "engaged at
-    default settings" is either a measured fact or a guess. */
-double fractionAboveKnee(const Stream &stream)
-{
-    std::size_t above = 0;
-    std::size_t total = 0;
-    for (const auto &channel : stream)
-        for (const float sample : channel)
-        {
-            above += std::abs(sample) > dsp::SoftClipper::knee ? 1U : 0U;
-            ++total;
-        }
-    return total != 0 ? static_cast<double>(above) / static_cast<double>(total) : 0.0;
-}
-
-/** 01 criterion 6's click prototype: max |x[n] - 2x[n-1] + x[n-2]| over every channel. */
-double secondDifferencePeak(const Stream &stream)
-{
-    double worst = 0.0;
-    for (const auto &channel : stream)
-        for (std::size_t i = 2; i < channel.size(); ++i)
-        {
-            const double d2 = std::abs(static_cast<double>(channel[i])
-                                       - 2.0 * static_cast<double>(channel[i - 1])
-                                       + static_cast<double>(channel[i - 2]));
-            worst = std::max(worst, d2);
-        }
-    return worst;
-}
-
-/** Where a render first clears `threshold` — the index criterion B6 requires not to move when a stage
-    is installed, since a stage that delays would move it by exactly its delay. */
-std::size_t arrivalIndex(const Stream &stream, double threshold)
-{
-    const std::size_t length = stream.empty() ? 0 : stream[0].size();
-    for (std::size_t i = 0; i < length; ++i)
-        for (const auto &channel : stream)
-            if (std::abs(static_cast<double>(channel[i])) > threshold)
-                return i;
-    return std::numeric_limits<std::size_t>::max();
-}
-
-bool expectIdentical(const Stream &got, const Stream &want, const char *what)
-{
-    if (got.size() != want.size())
-    {
-        std::cout << "  FAIL " << what << ": " << got.size() << " channels vs " << want.size()
-                  << "\n";
-        return false;
-    }
-    for (std::size_t channel = 0; channel < got.size(); ++channel)
-    {
-        if (got[channel].size() != want[channel].size())
-        {
-            std::cout << "  FAIL " << what << ": ch" << channel << " length "
-                      << got[channel].size() << " vs " << want[channel].size() << "\n";
-            return false;
-        }
-        for (std::size_t i = 0; i < got[channel].size(); ++i)
-        {
-            if (got[channel][i] != want[channel][i])
-            {
-                std::cout << "  FAIL " << what << ": ch" << channel << " n" << i << " got "
-                          << got[channel][i] << " want " << want[channel][i] << "\n";
-                return false;
-            }
-        }
-    }
-    std::cout << "  ok   " << what << "\n";
-    return true;
-}
-
-bool expectDelayedBitExact(const Stream &out, const Stream &in, int latency, const char *what)
-{
-    for (std::size_t channel = 0; channel < out.size(); ++channel)
-    {
-        for (std::size_t i = 0; i < out[channel].size(); ++i)
-        {
-            const float expected = i < static_cast<std::size_t>(latency)
-                                       ? 0.0f
-                                       : in[channel][i - static_cast<std::size_t>(latency)];
-            if (out[channel][i] != expected)
-            {
-                std::cout << "  FAIL " << what << ": ch" << channel << " n" << i << " got "
-                          << out[channel][i] << " want " << expected << "\n";
-                return false;
-            }
-        }
-    }
-    std::cout << "  ok   " << what << ": bit-exact, delayed by " << latency << "\n";
-    return true;
-}
-
-bool expectFinite(const Stream &out, const char *what)
-{
-    for (std::size_t channel = 0; channel < out.size(); ++channel)
-        for (std::size_t i = 0; i < out[channel].size(); ++i)
-            if (!std::isfinite(out[channel][i]))
-            {
-                std::cout << "  FAIL " << what << ": non-finite at ch" << channel << " n" << i
-                          << " = " << out[channel][i] << "\n";
-                return false;
-            }
-    std::cout << "  ok   " << what << ": no NaN, no inf\n";
-    return true;
-}
-
-double peakOf(const Stream &stream)
-{
-    double peak = 0.0;
-    for (const auto &channel : stream)
-        for (const float sample : channel)
-            peak = std::max(peak, static_cast<double>(std::abs(sample)));
-    return peak;
-}
-
-/** Level of a ratio, for the legs that have to quote a reshaping in the unit the decision log uses. */
-double decibels(double ratio)
-{
-    return 20.0 * std::log10(ratio);
-}
-
-double hannAt(int i, int length) noexcept
-{
-    return 0.5 * (1.0 - std::cos(2.0 * 3.14159265358979323846 * static_cast<double>(i)
-                                 / static_cast<double>(length)));
-}
-
-bool writeWav(const juce::File &file, const Stream &data)
-{
-    juce::WavAudioFormat format;
-    auto fileStream = std::make_unique<juce::FileOutputStream>(file);
-    if (!fileStream->openedOk())
-    {
-        std::cout << "  FAIL cannot open " << file.getFullPathName().toRawUTF8() << "\n";
-        return false;
-    }
-
-    const auto options = juce::AudioFormatWriterOptions{}
-                             .withSampleRate(kSampleRate)
-                             .withChannelLayout(data.size() > 1 ? juce::AudioChannelSet::stereo()
-                                                                : juce::AudioChannelSet::mono())
-                             .withBitsPerSample(32)
-                             .withSampleFormat(
-                                 juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
-
-    std::unique_ptr<juce::OutputStream> stream = std::move(fileStream);
-    auto writer = format.createWriterFor(stream, options);
-    if (writer == nullptr)
-    {
-        std::cout << "  FAIL writer for " << file.getFileName().toRawUTF8() << "\n";
-        return false;
-    }
-
-    std::vector<const float *> channels(data.size());
-    for (std::size_t channel = 0; channel < data.size(); ++channel)
-        channels[channel] = data[channel].data();
-
-    const bool written = writer->writeFromFloatArrays(
-        channels.data(), static_cast<int>(data.size()),
-        static_cast<int>(data.empty() ? 0 : data[0].size()));
-    writer.reset();
-
-    if (!written)
-        std::cout << "  FAIL write " << file.getFileName().toRawUTF8() << "\n";
-    return written;
-}
+/* The shared helpers now live in tools/harness (M5 item 01). Each one is named here rather than pulled in by a
+   `using namespace harness;`, so this file states which library helpers it uses and a name that stops being used
+   shows up as a dead declaration instead of a silent widening of lookup for the 5 500 lines below. */
+using harness::Stream;
+using harness::Shape;
+using harness::kSampleRate;
+using harness::kMaxBlock;
+using harness::kDeltaTolerance;
+using harness::kWetRecoveryTolerance;
+using harness::kDefault;
+using harness::kTightest;
+using harness::kLongest;
+using harness::noiseStream;
+using harness::constantStream;
+using harness::impulseStream;
+using harness::singleImpulse;
+using harness::blocksSummingTo;
+using harness::constantBlocks;
+using harness::dcComponentOf;
+using harness::settledRms;
+using harness::fractionAboveKnee;
+using harness::secondDifferencePeak;
+using harness::arrivalIndex;
+using harness::peakOf;
+using harness::decibels;
+using harness::hannAt;
+using harness::BusSetup;
+using harness::kStereoWithB;
+using harness::kStereoNoB;
+using harness::kMonoNoB;
+using harness::kMonoWithB;
+using harness::kMonoWithEightB;
+using harness::kMonoWithMonoB;
+using harness::kStereoWithMonoB;
+using harness::kMonoWithThreeB;
+using harness::kMonoWithFiveB;
+using harness::makeProcessor;
+using harness::shellOf;
+using harness::indexOfHop;
+using harness::indexOfLength;
+using harness::setChoice;
+using harness::setFloat;
+using harness::setBool;
+using harness::parameterValue;
+using harness::applyLayout;
+using harness::configure;
+using harness::MixSetting;
+using harness::renderSwept;
+using harness::render;
+using harness::renderAt;
+using harness::renderReference;
+using harness::renderPureWet;
+using harness::shapedBySafetyStages;
+using harness::expectIdentical;
+using harness::expectDelayedBitExact;
+using harness::expectFinite;
+using harness::writeWav;
+using harness::ReportLogFilter;
+/* M5 item 02 lifted §5.20's comparison, cell table and slot models into the harness so the cross-product
+   binary runs the same definitions. §5.20's own text names none of the types involved — it takes what
+   compareStreams hands it — so only the functions and the row type it selects from are declared here. */
+using harness::acceptedLayout;
+using harness::compareChannel;
+using harness::compareStreams;
+using harness::channelIsExactSilence;
+using harness::channelPeak;
+using harness::delayedBy;
+using harness::describe;
+using harness::kMatrixAmplitude;
+using harness::kMatrixMix;
+using harness::matrixCellOf;
+using harness::MatrixCell;
+using harness::meanWithOneReciprocal;
+using harness::monoPairModel;
+using harness::parkLevelStage;
+using harness::renderOf;
+using harness::slotModel;
+using harness::slotModelName;
 
 //==============================================================================
 // §5.1 — the shell adds nothing.
@@ -1594,20 +918,6 @@ bool reportHeadroom(const Shape &shape, int total)
 //==============================================================================
 // §5.10 — the mix law through the shell: the dial endpoints, the pin, bypass, output gain, and a
 // parameter state that predates the two new parameters.
-/** One render with the three mix parameters parked at a setting.
-
-    Every pass starts from reset(), which snaps the mix stage's coefficients onto their targets, so
-    what these legs measure is a settled state. The ramps themselves are the Engine console tests'
-    subject — they need a stub wet source to be bit-exact about, which the shell cannot offer. */
-Stream renderAt(juce::AudioProcessor &processor, const Stream &a, const Stream *b, float dial,
-                float gainDb, bool bypassed, const std::vector<int> &blocks)
-{
-    if (!setFloat(processor, EntangleAudioProcessor::blendParameterId, dial)
-        || !setFloat(processor, EntangleAudioProcessor::outputGainParameterId, gainDb)
-        || !setBool(processor, EntangleAudioProcessor::bypassParameterId, bypassed))
-        return {};
-    return render(processor, a, b, blocks);
-}
 
 bool checkMixLaw()
 {
@@ -3999,107 +3309,59 @@ bool checkReprepareFloorAndLatency()
     kDefault, the configuration the plugin actually ships on. */
 constexpr Shape kMatrix{512, 1024};
 
-/** The dial state every arithmetic leg runs: p = 0, 0 dB, bypass off, the level stage parked at amount 0.
-    See the section header's dial discipline. */
-const MixSetting kMatrixMix{0.0f, 0.0f, false, 0.0f, dsp::LevelNormalizer::defaultFloorDb};
+/* The dial state (`kMatrixMix`), the level-stage park (`parkLevelStage`) and the material level
+   (`kMatrixAmplitude`) moved to tools/harness/HarnessShell.{hpp,cpp} in M5 item 02, which is their second
+   consumer; the reasoning — amount 0 so the wet path is linear in B, and 0.1 rather than §5.1's 0.4 so the
+   clipper never bends a linear-in-B comparison — moved with them. */
 
-/** Parks the level stage on the shell side of a leg, so it matches the `kMatrixMix` the reference renders
-    run: amount 0 is bit-exact identity (§5.12's leg for that is `checkLevelStageMovesNothing`), which makes
-    the wet path linear in B and keeps a non-linear, history-carrying stage out of the comparisons below. */
-bool parkLevelStage(juce::AudioProcessor &processor)
-{
-    return setFloat(processor, EntangleAudioProcessor::normalisationAmountParameterId, 0.0f);
-}
-
-/** The broadband level the matrix's material runs at, and why it is not §5.1's 0.4.
-
-    D-008's wet gain at the matrix's `L` = 1024 is 0.798 — eight times the default grain length's — so two
-    uncorrelated streams at 0.3 convolve to a peak of 1.26, which is above `SoftClipper::knee` = 1.0. Nothing
-    in the matrix asserts anything about that curve, and the stage parked at amount 0 removes only the
-    normalizer, not the clipper: the fold and mean models below are linear-in-B arguments, so they are wrong
-    the moment the clipper bends the stream. At 0.1 the peak lands near 0.14 and every comparison in this
-    section is against a path that is linear by construction. The impulse material in M4 and M5 is quieter
-    still (response peaks near 0.3) and needs no such care. */
-constexpr float kMatrixAmplitude = 0.1f;
-
-/** One row of the matrix: a layout, the shape it runs at, and the mapping the harness expects to hear.
+/** One row of a selected cell: a layout, the shape it runs at, and the mapping the harness expects to hear.
 
     The `a`/`b` arrays are hand-written on purpose, not read back from `resolve`: expectations derived from
     the rule would make this section self-fulfilling, and a wrong rule would render wrongly while agreeing
     with itself. The first leg asserts the table against `resolve` for every cell before a single sample is
     rendered. The table is evidence, not a second decider — nothing in the product or this harness routes
-    anything from it, and `ChannelMap.hpp`'s own `static_assert`s remain the pins on the rule. */
-struct MatrixCell
+    anything from it, and `ChannelMap.hpp`'s own `static_assert`s remain the pins on the rule.
+
+    Since M5 item 02 the expected mapping itself lives once in the harness (`AcceptedLayout`), shared with the
+    cross-product binary, and what is left here is only this section's *selection*: nine of the twelve
+    gate-accepted triples at the matrix shape and (1,5,1) a second time at the shipped default. A function
+    rather than an array because the shared table is in another translation unit. */
+const std::vector<MatrixCell> &matrixCells()
 {
-    const char *name;
-    const BusSetup *bus;
-    Shape shape;
-    int chA;
-    int chB;
-    int chOut;
-    int processed;
-    const char *family;
-    std::array<std::uint16_t, engine::kMaxChannels> a{};
-    std::array<std::uint16_t, engine::kMaxChannels> b{};
-
-    /** 8L — 16 hops at kMatrix, leaving 2L of room after an impulse at n0 = 0, whose response occupies
-        [n0 + L, n0 + 2L − 1]. A run has to clear the bounds its assertions land after, so the driver checks
-        this per cell before any leg runs (criterion 2): an assertion mid-transient is not evidence, and
-        shortening this section is the likeliest way to break it silently. */
-    int runningLengthSamples() const noexcept
-    {
-        return 8 * EntangleAudioProcessor::clampGrainLength(shape.chosen, shape.hop);
-    }
-};
-
-const MatrixCell kMatrixCells[] = {
-    { "(1,0,1)", &kMonoNoB, kMatrix, 1, 0, 1, 1, "no sidechain",
-      { 0 }, { engine::kSilentSource } },
-    { "(1,1,1)", &kMonoWithMonoB, kMatrix, 1, 1, 1, 1, "broadcast",
-      { 0 }, { 0 } },
-    { "(1,2,1)", &kMonoWithB, kMatrix, 1, 2, 1, 1, "consolidated",
-      { 0 }, { engine::kConsolidatedSource } },
-    { "(1,3,1)", &kMonoWithThreeB, kMatrix, 1, 3, 1, 1, "consolidated, non-dyadic 1/3",
-      { 0 }, { engine::kConsolidatedSource } },
-    { "(1,5,1)", &kMonoWithFiveB, kMatrix, 1, 5, 1, 1, "consolidated, non-dyadic 1/5",
-      { 0 }, { engine::kConsolidatedSource } },
-    { "(1,8,1)", &kMonoWithEightB, kMatrix, 1, 8, 1, 1, "consolidated, the ceiling",
-      { 0 }, { engine::kConsolidatedSource } },
-    { "(2,0,2)", &kStereoNoB, kMatrix, 2, 0, 2, 2, "no sidechain",
-      { 0, 1 }, { engine::kSilentSource, engine::kSilentSource } },
-    { "(2,1,2)", &kStereoWithMonoB, kMatrix, 2, 1, 2, 2, "broadcast to both slots",
-      { 0, 1 }, { 0, 0 } },
-    { "(2,2,2)", &kStereoWithB, kMatrix, 2, 2, 2, 2, "diagonal",
-      { 0, 1 }, { 0, 1 } },
-    /* The shape assumption, witnessed: the widest odd consolidated triple at the grain length and hop the
-       plugin ships on. A row of the table rather than a special case in the loop. */
-    { "(1,5,1)@default", &kMonoWithFiveB, kDefault, 1, 5, 1, 1,
-      "consolidated, at the shipped shape",
-      { 0 }, { engine::kConsolidatedSource } },
-};
+    static const std::vector<MatrixCell> cells{
+        matrixCellOf(*acceptedLayout(1, 0), kMatrix),
+        matrixCellOf(*acceptedLayout(1, 1), kMatrix),
+        matrixCellOf(*acceptedLayout(1, 2), kMatrix),
+        matrixCellOf(*acceptedLayout(1, 3), kMatrix),
+        matrixCellOf(*acceptedLayout(1, 5), kMatrix),
+        matrixCellOf(*acceptedLayout(1, 8), kMatrix),
+        matrixCellOf(*acceptedLayout(2, 0), kMatrix),
+        matrixCellOf(*acceptedLayout(2, 1), kMatrix),
+        matrixCellOf(*acceptedLayout(2, 2), kMatrix),
+        /* The shape assumption, witnessed: the widest odd consolidated triple at the grain length and hop the
+           plugin ships on. A row of the table rather than a special case in the loop, with its own name and
+           its own family text — the triple's family describes its routing, and this row is about its length. */
+        matrixCellOf(*acceptedLayout(1, 5), kDefault, "(1,5,1)@default",
+                     "consolidated, at the shipped shape"),
+    };
+    return cells;
+}
 
 /** The kMatrix row for a pair of counts, or null. The shape is part of the key because the table holds two
     (1,5,1) rows — one at the matrix shape, one at the shipped default. */
 const MatrixCell *matrixCell(int chA, int chB)
 {
-    for (const MatrixCell &cell : kMatrixCells)
+    for (const MatrixCell &cell : matrixCells())
         if (cell.chA == chA && cell.chB == chB && cell.shape.hop == kMatrix.hop
             && cell.shape.chosen == kMatrix.chosen)
             return &cell;
     return nullptr;
 }
 
-/** A cell rendered through a fresh shell at its own layout and shape with the stage parked. The family legs
-    need two cells at a time and so cannot share the driver's rig; a failed configure prints its own FAIL
-    inside `configure` and renders nothing, which the caller's comparison then reports as a shape mismatch. */
-Stream renderOf(const MatrixCell &cell, const Stream &a, const Stream *side,
-                const std::vector<int> &blocks)
-{
-    auto processor = makeProcessor();
-    if (!configure(*processor, *cell.bus, cell.shape) || !parkLevelStage(*processor))
-        return {};
-    return render(*processor, a, side, blocks);
-}
+/* renderOf — a cell rendered through a fresh shell at its own layout and shape with the stage parked — moved
+   to the harness with the cell type. The family legs need two cells at a time and so cannot share the
+   driver's rig; a failed configure prints its own FAIL inside `configure` and renders nothing, which the
+   caller's comparison then reports as a shape mismatch. */
 
 /** One line per (cell, leg), naming both and carrying the figure that decided it. `OfflineRender` cannot be
     filtered per case (INDEX §4), so the printout is the only index to a failure, and the tally is what lets
@@ -4118,140 +3380,11 @@ struct MatrixReport
     }
 };
 
-/** The comparison a leg reports: worst |got − want| with its address, and whether the two are bit-identical.
-    §5.1's `expectIdentical` prints its own line and stops at the first difference; this section reports one
-    line per (cell, leg) with the worst delta in it, so the tally and the figure agree. */
-struct StreamDelta
-{
-    double worst = 0.0;
-    std::size_t channel = 0;
-    std::size_t sample = 0;
-    bool shapeMismatch = false;
-    bool bitIdentical = true;
-};
-
-StreamDelta compareChannel(const Stream &got, std::size_t gotChannel, const Stream &want,
-                           std::size_t wantChannel)
-{
-    StreamDelta delta;
-    if (gotChannel >= got.size() || wantChannel >= want.size())
-    {
-        delta.shapeMismatch = true;
-        delta.bitIdentical = false;
-        return delta;
-    }
-    const auto &from = got[gotChannel];
-    const auto &to = want[wantChannel];
-    if (from.size() != to.size())
-        delta.shapeMismatch = true;
-    for (std::size_t i = 0; i < std::min(from.size(), to.size()); ++i)
-    {
-        const double difference = std::abs(static_cast<double>(from[i]) - static_cast<double>(to[i]));
-        if (difference > delta.worst)
-        {
-            delta.worst = difference;
-            delta.channel = gotChannel;
-            delta.sample = i;
-        }
-        if (from[i] != to[i])
-            delta.bitIdentical = false;
-    }
-    return delta;
-}
-
-StreamDelta compareStreams(const Stream &got, const Stream &want)
-{
-    StreamDelta delta;
-    if (got.size() != want.size())
-    {
-        delta.shapeMismatch = true;
-        delta.bitIdentical = false;
-        return delta;
-    }
-    for (std::size_t channel = 0; channel < got.size(); ++channel)
-    {
-        const auto one = compareChannel(got, channel, want, channel);
-        if (one.worst > delta.worst)
-        {
-            delta.worst = one.worst;
-            delta.channel = channel;
-            delta.sample = one.sample;
-        }
-        delta.bitIdentical = delta.bitIdentical && one.bitIdentical;
-    }
-    return delta;
-}
-
-juce::String describe(const StreamDelta &delta)
-{
-    if (delta.shapeMismatch)
-        return juce::String("shape mismatch (max ") + juce::String::formatted("%.3e", delta.worst) + ")";
-    return juce::String::formatted("max %.3e at ch%d n%u%s", delta.worst,
-                                   static_cast<int>(delta.channel),
-                                   static_cast<unsigned>(delta.sample),
-                                   delta.bitIdentical ? ", bit-identical" : "");
-}
-
-double channelPeak(const Stream &stream, std::size_t channel)
-{
-    if (channel >= stream.size())
-        return 0.0;
-    double peak = 0.0;
-    for (const float sample : stream[channel])
-        peak = std::max(peak, static_cast<double>(std::abs(sample)));
-    return peak;
-}
-
-/** E's second level: every sample exactly 0.0f. Reported per channel because a leak in one output is the
-    finding, and a peak over the whole render would hide which one. */
-bool channelIsExactSilence(const Stream &stream, std::size_t channel)
-{
-    if (channel >= stream.size())
-        return false;
-    for (const float sample : stream[channel])
-        if (sample != 0.0f)
-            return false;
-    return true;
-}
-
-/** The dry-path model: `in` delayed by `latency`, zeros before it. Same arithmetic as §5.5's
-    `expectDelayedBitExact` without that helper's print, because this section tallies its own lines. */
-Stream delayedBy(const Stream &in, int latency)
-{
-    Stream want(in.size());
-    for (std::size_t channel = 0; channel < in.size(); ++channel)
-    {
-        want[channel].assign(in[channel].size(), 0.0f);
-        for (std::size_t i = static_cast<std::size_t>(latency); i < in[channel].size(); ++i)
-            want[channel][i] = in[channel][i - static_cast<std::size_t>(latency)];
-    }
-    return want;
-}
-
-Stream scaledCopy(const Stream &in, float scale)
-{
-    Stream out = in;
-    for (auto &channel : out)
-        for (auto &sample : channel)
-            sample = sample * scale;
-    return out;
-}
-
-/** `HopScheduler::foldSidechain`'s arithmetic restated in the harness: ascending source order, the
-    reciprocal applied once, after the sum. F2's model — the scheduler's fold has to land on this, and
-    `bitIdentical` is the figure that says whether it does. */
-Stream meanWithOneReciprocal(const Stream &side, float scale)
-{
-    Stream mean(1, std::vector<float>(side.empty() ? 0 : side[0].size(), 0.0f));
-    for (std::size_t i = 0; i < mean[0].size(); ++i)
-    {
-        float sum = 0.0f;
-        for (const auto &channel : side)
-            sum += channel[i];
-        mean[0][i] = sum * scale;
-    }
-    return mean;
-}
+/* StreamDelta, compareChannel, compareStreams, describe, channelPeak, channelIsExactSilence, delayedBy,
+   scaledCopy and meanWithOneReciprocal moved to tools/harness for M5 item 02 — the comparison half
+   (std-only) to EntangleHarnessCore, `describe` with the cell table to EntangleHarnessShell. The cross-product
+   binary is their second consumer, and two definitions of "identical" in the suite is the F-020 failure mode
+   in a smaller hat. What is left here is the two models only this section's family legs compare. */
 
 /** The variant the fold does *not* implement: the scale applied to every term before the sum. Dyadic
     reciprocals make the two identical; 1/3 and 1/5 do not, and the gap printed from here is what a future
@@ -4281,46 +3414,9 @@ Stream meanOfRenders(const Stream &first, const Stream &second)
     return mean;
 }
 
-/** What slot `slot` reads, spelled out for the printout: the A source and the B side the table names. */
-juce::String slotModelName(const MatrixCell &cell, std::size_t slot)
-{
-    const std::uint16_t source = cell.b[slot];
-    if (source == engine::kSilentSource)
-        return "A" + juce::String(static_cast<int>(cell.a[slot])) + " x silence";
-    if (source == engine::kConsolidatedSource)
-        return "A" + juce::String(static_cast<int>(cell.a[slot])) + " x mean(B0..B"
-               + juce::String(cell.chB - 1) + ")";
-    return "A" + juce::String(static_cast<int>(cell.a[slot])) + " x B"
-           + juce::String(static_cast<int>(source));
-}
-
-/** The reference for one slot, rendered alone: one A channel and, on the B side, exactly what the map says
-    that slot reads — channel 0 for a broadcast slot, channel `c` for a diagonal one, the whole side for a
-    consolidated slot (whose fold the reference computes itself). Nothing else is in the layout, which is the
-    point: the claim is that the slot hears no other channel. */
-Stream slotModel(const MatrixCell &cell, const Stream &a, std::size_t slot, const Stream &side,
-                 const std::vector<int> &blocks)
-{
-    const Stream oneA{ a[cell.a[slot]] };
-    const std::uint16_t source = cell.b[slot];
-    if (source == engine::kConsolidatedSource)
-        return renderReference(cell.shape, oneA, side, 1, cell.chB, blocks, kMatrixMix);
-    const Stream oneB{ side[source] };
-    return renderReference(cell.shape, oneA, oneB, 1, 1, blocks, kMatrixMix);
-}
-
-/** conv(A[a[c]], B[j]) scaled by `scale`, rendered alone on one A channel and one B channel. With scale 1
-    this is the broadcast and diagonal model; with 1/chB it is the model for a consolidated slot fed a single
-    sidechain channel, because the fold is linear and the mean of one channel is that channel over chB. The
-    scale lands on the *output* here and on the *input* in the scheduler, and the rounding difference between
-    those two is exactly what kDeltaTolerance is for. */
-Stream monoPairModel(const MatrixCell &cell, const Stream &a, std::size_t slot, const Stream &side,
-                     std::size_t sideChannel, float scale, const std::vector<int> &blocks)
-{
-    const Stream oneA{ a[cell.a[slot]] };
-    const Stream oneB{ side[sideChannel] };
-    return scaledCopy(renderReference(cell.shape, oneA, oneB, 1, 1, blocks, kMatrixMix), scale);
-}
+/* slotModelName, slotModel and monoPairModel moved to tools/harness/HarnessShell.{hpp,cpp} with the cell
+   table they read. The cross-product binary's absolute anchor leg runs the same two models on one canonical
+   plan per triple rather than restating them (item 02 decision D). */
 
 /** The three callback plans M3 runs over the same total: the two ragged lists the file already had, and the
     steady 512-sample callback neither of them contains. */
@@ -4874,7 +3970,7 @@ bool checkChannelMatrix()
                  "       occupies [L, 2L-1]), R, and the level stage's window + release = "
               << bounds.windowSamples() << " + " << releaseSamples << " = " << stageBound << " samples\n";
 
-    for (const MatrixCell &cell : kMatrixCells)
+    for (const MatrixCell &cell : matrixCells())
     {
         const int total = cell.runningLengthSamples();
         const int length = EntangleAudioProcessor::clampGrainLength(cell.shape.chosen, cell.shape.hop);
@@ -4926,7 +4022,7 @@ bool checkChannelMatrix()
     passed = familyPerChannelConfinement(report) && passed;
     passed = familyFoldReciprocal(report) && passed;
 
-    std::cout << "       " << (sizeof(kMatrixCells) / sizeof(kMatrixCells[0])) << " cells x 6 per-cell legs\n"
+    std::cout << "       " << matrixCells().size() << " cells x 6 per-cell legs\n"
               << "       plus the table check and 3 family legs: " << report.decided << " lines decided, "
               << report.failed << " FAIL\n";
     return passed && report.failed == 0;
@@ -5026,24 +4122,6 @@ ReportCounters countersOf(const juce::String &report)
 {
     return {reportField(report, "prepares").getIntValue(), reportField(report, "skipped").getIntValue()};
 }
-
-/** Swallows the plugin's report lines for every section except §5.21, forwarding anything else to stdout the
-    way JUCE's default logger does.
-
-    Needed because the guard in `refreshLayoutReport` passes on this thread: `MessageManager`'s constructor
-    records the thread that built it (juce_MessageManager.cpp:38) and `ScopedJuceInitialiser_GUI` builds one on
-    `main()`, so every prepare in §5.1…§5.20 writes a line — which is F-018, and without this filter C7 has no
-    byte comparison to make against the pre-report baseline. §5.21 replaces it with a counting logger to test
-    the delivery itself. */
-struct ReportLogFilter : juce::Logger
-{
-    void logMessage(const juce::String &message) override
-    {
-        if (message.contains("entangle layout"))
-            return;
-        std::cout << message << "\n";
-    }
-};
 
 /** Counts the report lines the plugin writes while installed as JUCE's logger (C4, C5). */
 struct ReportLogCapture : juce::Logger
@@ -5582,5 +4660,12 @@ int main()
     passed = checkLayoutReport(logFilter) && passed;
 
     std::cout << (passed ? "PASS" : "FAIL") << "\n";
+
+    /* `Logger::~Logger` asserts that the object being destroyed is not the installed one
+       (juce_Logger.cpp:44), and `logFilter` is a stack object in `main()` that would be destroyed while still
+       current. In `Release` JUCE's assertions are compiled out, so only a Debug tree reddens on the way out of
+       a run whose every leg is `ok`. Uninstalling is the only correct order: the filter has to be installed for
+       §5.21's legs to have anything to count. */
+    juce::Logger::setCurrentLogger(nullptr);
     return passed ? 0 : 1;
 }

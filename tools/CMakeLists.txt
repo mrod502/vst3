@@ -1,3 +1,7 @@
+# Before the targets that consume it: OfflineRender and ShellTests both link the harness, and the harness is what
+# holds the 35 shared helpers this program used to define privately (M5 item 01).
+add_subdirectory(harness)
+
 juce_add_console_app(OfflineRender PRODUCT_NAME "Entangle Offline Render")
 
 target_sources(OfflineRender PRIVATE OfflineRender.cpp)
@@ -10,11 +14,17 @@ target_compile_definitions(OfflineRender PRIVATE
 # vstplug is the plugin's shared code (libEntangle_SharedCode.a): the harness renders through
 # the same processor the VST3 bundle loads, instead of recompiling the shell.
 #
+# EntangleHarnessShell brings the 35 shared helpers (drivers, layouts, generators, metrics, expectations, the WAV
+# writer) that this program used to define in its own translation unit, and with them the Core half and the
+# src/Entangle include path — see tools/harness. vstplug stays listed explicitly: it is the reason the shell in
+# this binary is the shell that ships.
+#
 # Grain and FftJuce are linked directly, not inherited: vstplug takes them PRIVATE, so §5.1's
 # reference chain — the same engine and transform with no shell in it — needs its own route to
 # both. src/Entangle is on the path for the processor's header, which names the parameter ids and
 # the clamp rule the harness asserts against.
 target_link_libraries(OfflineRender PRIVATE
+    EntangleHarnessShell
     vstplug
     Engine
     Grain

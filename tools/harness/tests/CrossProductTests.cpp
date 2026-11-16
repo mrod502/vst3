@@ -79,7 +79,7 @@ constexpr Shape kShippedShape = kDefault;
 constexpr int kShortRunLengths = 8;
 constexpr int kLongRunLengths = 4;
 
-/** The milestone's callback sizes, each of which has to appear as a *uniform* plan (§1.4). */
+/** The milestone's callback sizes, each of which has to appear as a *uniform* plan. */
 constexpr std::array<int, 5> kMilestoneSizes{{1, 7, 64, 128, 4096}};
 
 /** One line per (cell, leg) in §5.20's shape, so the two binaries' output reads as one suite's. */

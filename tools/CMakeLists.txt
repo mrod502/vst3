@@ -23,6 +23,10 @@ target_compile_definitions(OfflineRender PRIVATE
 # reference chain — the same engine and transform with no shell in it — needs its own route to
 # both. src/Entangle is on the path for the processor's header, which names the parameter ids and
 # the clamp rule the harness asserts against.
+#
+# Ui and UiJuce arrive *with* vstplug, which takes UiJuce PUBLIC because the editor's own header names the
+# kit types §5.22 casts to. Listed here for that reason rather than relied on silently: if vstplug's
+# PUBLIC list ever drops it, this target's failure is a missing header at §5.22, not a mystery.
 target_link_libraries(OfflineRender PRIVATE
     EntangleHarnessShell
     vstplug
@@ -73,3 +77,38 @@ target_link_libraries(PrepareFootprint PRIVATE
     juce::juce_recommended_warning_flags)
 
 target_include_directories(PrepareFootprint PRIVATE ${CMAKE_SOURCE_DIR}/src/Entangle)
+
+# M10 item 02's two kit instruments, both plain executables for the reason ShellTests is one: a juce console
+# app buries the binary in an _artefacts directory, and neither program needs anything from juce_add_console_app
+# beyond the module config that UiJuce already propagates PUBLIC.
+#
+# UiProbe is the pixel probe — criteria 3, 5, 6, 7, 8, 9, 11 — and UiAllocTests is criterion 10's. They are
+# separate binaries because UiAllocTests replaces global operator new, which §10 allows exactly once per
+# program, and because entangle_enable_alloc_watch() is a function defined in tools/harness and so is not
+# callable from here: the two light shims stay where they are rather than move for a program whose subject is
+# not the plugin's hop path (F-020's reasoning, applied to a different binary).
+#
+# Both own their main() — the GUI initialiser has to run before any Image, Typeface or glyph cache exists —
+# so each compiles Catch2's amalgamated source with CATCH_AMALGAMATED_CUSTOM_MAIN rather than linking
+# EntangleCatch2, which ships an unconditional main. One Catch2 per program still holds.
+add_executable(UiProbe
+    UiProbe.cpp
+    ${entangle_catch2_SOURCE_DIR}/extras/catch_amalgamated.cpp)
+
+target_compile_definitions(UiProbe PRIVATE CATCH_AMALGAMATED_CUSTOM_MAIN=1)
+target_include_directories(UiProbe PRIVATE ${entangle_catch2_SOURCE_DIR}/extras)
+target_link_libraries(UiProbe PRIVATE UiJuce)
+
+add_executable(UiAllocTests
+    UiAllocTests.cpp
+    ${entangle_catch2_SOURCE_DIR}/extras/catch_amalgamated.cpp)
+
+target_compile_definitions(UiAllocTests PRIVATE CATCH_AMALGAMATED_CUSTOM_MAIN=1)
+target_include_directories(UiAllocTests PRIVATE ${entangle_catch2_SOURCE_DIR}/extras)
+target_link_libraries(UiAllocTests PRIVATE UiJuce)
+
+if(BUILD_TESTING)
+    catch_discover_tests(UiProbe)
+    catch_discover_tests(UiAllocTests)
+endif()
+

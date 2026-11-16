@@ -64,9 +64,8 @@ extern const BusSetup kMonoWithMonoB;
 extern const BusSetup kStereoWithMonoB;
 extern const BusSetup kMonoWithThreeB;
 extern const BusSetup kMonoWithFiveB;
-/* The three widths M5 item 02 adds (§1.3: the harness held nine of the twelve gate-accepted triples and
-   none of these). They are consolidated like the 3, 5 and 8 above, and 6 and 7 are the second pair of
-   non-dyadic reciprocals in the accepted set. */
+/* The three widths that take the accepted set to twelve. They are consolidated like the 3, 5 and 8
+   above, and 6 and 7 are the second pair of non-dyadic reciprocals in the accepted set. */
 extern const BusSetup kMonoWithFourB;
 extern const BusSetup kMonoWithSixB;
 extern const BusSetup kMonoWithSevenB;
@@ -140,7 +139,7 @@ extern const MixSetting kMatrixMix;
     the wet path linear in B and keeps a non-linear, history-carrying stage out of the comparisons below. */
 bool parkLevelStage(juce::AudioProcessor &processor);
 
-/** The broadband level the routing legs run their material at, and why it is not §5.1's 0.4.
+/** The broadband level the routing legs run their material at, and why it is not 0.4.
 
     D-008's wet gain at `L` = 1024 is 0.798 — eight times the default grain length's — so two uncorrelated
     streams at 0.3 convolve to a peak of 1.26, which is above `SoftClipper::knee` = 1.0. Nothing in a routing
@@ -179,7 +178,7 @@ struct AcceptedLayout
     std::array<std::uint16_t, engine::kMaxChannels> b{};
 };
 
-/** The whole set `engine::gateLayout` accepts — measured 2026-11-11: a mono main with chB in [0, 8] and a
+/** The whole set `engine::gateLayout` accepts — measured: a mono main with chB in [0, 8] and a
     stereo main with chB in [0, 2]. Nothing refused is in here (D-021 B: no cell for a layout the gate
     declines), and `OfflineRender` §5.21 is the leg that keeps this list equal to the gate's. */
 const std::array<AcceptedLayout, 12> &acceptedLayouts();
@@ -297,10 +296,8 @@ Stream renderSwept(juce::AudioProcessor &processor, const Stream &in, const Stre
     for (const int samples : blocks)
     {
         /* The gesture runs before the counts are read, so a callback that changes the layout is filled and
-           measured as the layout that is in force for it. Sized first, the switching callback hands the new
-           configuration the old layout's buffers — a 2-processed scheduler draining into a 1-channel output —
-           and segfaults inside HopScheduler::process. Every other leg's gesture leaves the counts alone, so
-           this ordering only matters to §5.19. */
+           measured as the layout in force for it. Sized first, the switching callback hands the new
+           configuration the old layout's buffers and segfaults inside HopScheduler::process. */
         gesture(callback);
         ++callback;
 
@@ -338,8 +335,8 @@ Stream renderSwept(juce::AudioProcessor &processor, const Stream &in, const Stre
     return out;
 }
 
-/** Swallows the plugin's report lines for every section except §5.21, forwarding anything else to stdout the
-    way JUCE's default logger does.
+/** Swallows the plugin's report lines except where a section is testing that delivery, forwarding
+    anything else to stdout the way JUCE's default logger does.
 
     Needed because the guard in `refreshLayoutReport` passes on this thread: `MessageManager`'s constructor
     records the thread that built it (juce_MessageManager.cpp:38) and `ScopedJuceInitialiser_GUI` builds one on

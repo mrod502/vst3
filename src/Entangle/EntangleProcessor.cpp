@@ -7,8 +7,8 @@
 
 namespace
 {
-/** The report's two gate words. The harness keeps its own mapping (`OfflineRender` §5.18) and §5.21 C1
-    compares this one against it field by field, so a report that names a verdict the gate did not return
+/** The report's two gate words. The harness keeps its own mapping and compares this one
+    against it field by field, so a report that names a verdict the gate did not return
     reddens a leg rather than quietly describing a layout that is not running. */
 const char* gateVerdictText(engine::LayoutVerdict verdict) noexcept
 {
@@ -44,9 +44,8 @@ const char* gateRuleText(engine::ChannelMapStatus status) noexcept
     return "unknown";
 }
 
-/* The line's prefix, formatted where the report is read rather than where its body was built. A declined
-   arrival never reaches refreshLayoutReport, so counters frozen at the last real prepare could never show
-   one — and "a skipped arrival proves the guard ran" is the only outside view of D-022 B there is. Callers
+/* The counters are formatted where the report is read, not where its body was built: a declined arrival
+   never reaches refreshLayoutReport, so this is the only outside view of a skipped re-prepare. Callers
    hold layoutReportLock. */
 juce::String layoutReportCounters(int prepares, int skipped)
 {
@@ -77,10 +76,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout EntangleAudioProcessor::make
             juce::ParameterID{grainLengthParameterId, 1}, "Grain length", grainLengthNames,
             defaultGrainLengthIndex,
             juce::AudioParameterChoiceAttributes().withAutomatable(false)),
-        /* Appended, never inserted. The two choice parameters above are indexed by position in a
-           saved preset, so the order they are declared in is part of the file format; the float and
-           bool parameters added here are looked up by id, so they can arrive at the end without
-           moving anything. */
+        /* Appended, never inserted: the two choice parameters above are indexed by position in a saved
+           preset, so their declaration order is part of the file format. The float and bool here are looked
+           up by id, so they can arrive at the end without moving anything. */
         std::make_unique<juce::AudioParameterFloat>(
             juce::ParameterID{outputGainParameterId, 1}, "Output gain",
             juce::NormalisableRange<float>{outputGainMinDb, outputGainMaxDb, outputGainStepDb},
@@ -102,10 +100,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout EntangleAudioProcessor::make
     return layout;
 }
 
-/* The mode 1 engine under the M3 mix law: with no sidechain bus B is silence (D-002), so the law
-   pins the effective dial to pure A there (D-011) rather than handing back the silence a pure-wet
-   shell would. The chain itself is built by the shared builder OfflineRender's §5.1 comparator
-   uses too, so the harness can never drift from what ships. */
+/* With no sidechain bus B is silence (D-002), so the law pins the effective dial to pure A (D-011) rather
+   than handing back the silence a pure-wet shell would. The chain is built by the same shared builder the
+   harness uses for its reference render, so a harness can never drift from what ships. */
 EntangleAudioProcessor::EntangleAudioProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Input", juce::AudioChannelSet::stereo(), true)
@@ -150,7 +147,7 @@ double EntangleAudioProcessor::getTailLengthSeconds() const
 {
     // The wet response to an impulse occupies [n0+L, n0+2L-1], so the tail past the declared R is
     // (2L-1)-R: measured through processBlock at 0.34 s for the 8192 default and 2.72 s at the
-    // 65536 cap (OfflineRender §5.3). Item 6's plan keeps the declaration at zero on that number.
+    // 65536 cap. Item 6's plan keeps the declaration at zero on that number.
     return 0.0;
 }
 
@@ -184,14 +181,9 @@ void EntangleAudioProcessor::changeProgramName(int index, const juce::String &ne
 //==============================================================================
 bool EntangleAudioProcessor::isBusesLayoutSupported(const BusesLayout &layouts) const
 {
-    /* The rule is engine::gateLayout's (D-021): this function only translates the host's bus shapes into
-       the three counts it takes. A disabled sidechain bus is chB == 0, which is not a mono sidechain
-       (D-002), and the answer is computed from the layout it is handed — never from sidechainActive or any
-       other cached member, because a host asks about layouts it has not applied.
-
-       The gate keeps the main bus at mono or stereo instead of opening it to the ceiling the channel map
-       resolves because some hosts, such as certain GarageBand versions, will only load plugins that support
-       a stereo bus layout. That is D-021 A's reason, and it is not recoverable from the code. */
+    /* The rule is engine::gateLayout's (D-021): this only translates the host's bus shapes into the three
+       counts it takes, from the layout it is handed and never from a cached member, because a host asks about
+       layouts it has not applied. The main bus stays mono/stereo — some hosts only load stereo-capable plugins. */
     const auto mainIn = layouts.getMainInputChannelSet();
     const auto mainOut = layouts.getMainOutputChannelSet();
     const auto sidechain = layouts.getChannelSet(true, 1);
@@ -245,13 +237,9 @@ void EntangleAudioProcessor::configureRings(double sampleRateToUse, int samplesP
     chain.outputChannels = getChannelCountOfBus(false, 0);
     chain.maxHostBlock = maxHostBlockFor(samplesPerBlock);
 
-    /* One triple, two readers: the gate decides whether it may run at all and the scheduler config turns
-       the map it resolved into ring sizes (D-021 G). They cannot disagree — `processed == map.channels` on
-       every triple the gate accepts, and both are 0 on a `channelRule` refusal — which is what lets the
-       early return below mean "the gate said no" rather than "the map was empty for a reason nobody
-       named". `isBusesLayoutSupported` refuses the layouts that used to arrive here and fall through it,
-       so AGENTS §13's silence-is-not-a-refusal gap is closed; the return stays because processBlock has to
-       be total and a zero-channel bus is a state the host can hand over without asking the gate anything. */
+    /* One triple, two readers: the gate decides whether it may run at all and the scheduler config turns the
+       map it resolved into ring sizes, and `processed == map.channels` on every triple the gate accepts. The
+       early return therefore means "the gate said no"; it stays because processBlock has to be total. */
     const engine::LayoutDecision layout =
         engine::gateLayout(chain.channels, chain.sidechainChannels, chain.outputChannels);
     const engine::SchedulerConfig schedulerConfig = entangle::makeSchedulerConfig(chain);
@@ -269,11 +257,8 @@ void EntangleAudioProcessor::configureRings(double sampleRateToUse, int samplesP
     }
 
     /* Conditional re-prepare (D-022 B): the seven-field key is the whole configuration the rings, the engine
-       and the latency pre-fill were built for, so an arrival that changes none of them does not rebuild them,
-       drop the tail or reconstruct the transform. It sits after the two cached members above so the live-bus
-       state is never left describing a layout the host stopped asking for, and before the prepare so the
-       comparison and the rebuild have one owner. `grainLength` is the post-clamp value, which is what lets a
-       dial move the clamp swallows be recognised as no change at all. */
+       and the pre-fill were built for, so an arrival that changes none of them rebuilds nothing and drops no
+       tail. `grainLength` is the post-clamp value, so a dial move the clamp swallows reads as no change. */
     const engine::ReconfigureKey key{sampleRateToUse,
                                      samplesPerBlock,
                                      chain.channels,
@@ -306,15 +291,9 @@ juce::String EntangleAudioProcessor::layoutReport() const
     return layoutReportCounters(prepareCount, skippedArrivalCount) + layoutReportBody;
 }
 
-/* The one place the report is written (D-023 B): the configuration that has just been built, read back off
-   the live buses rather than from `chain`, so a field that disagrees with an accessor is a bug in one of the
-   two and §5.21 C1's cross-check against the accessors is what finds it.
-
-   The log line goes out only when a message manager exists *and* this thread is it. That is not tidiness:
-   `writeToLog` reaches stdout or NSLog, which can block, and hosts are known to call `prepareToPlay` from
-   odd threads. A host that prepares elsewhere still gets the editor readout — and if a host turns out never
-   to show either, D-023's revisit trigger moves the delivery to the readout alone. The instance check comes
-   first because a harness with no message manager at all is one `main()` edit away. */
+/* The one place the report is written (D-023 B): the configuration just built, read back off the live buses
+   rather than from `chain`, so a field that disagrees with an accessor is a bug in one of the two. The log
+   line goes out only when a message manager exists and this thread is it — `writeToLog` can block. */
 void EntangleAudioProcessor::refreshLayoutReport(const engine::LayoutDecision& decision,
                                                  const entangle::ChainConfig& chain,
                                                  double sampleRateToUse, int samplesPerBlock)
@@ -387,11 +366,10 @@ void EntangleAudioProcessor::prepareToPlay(double sampleRateToUse, int samplesPe
 
 void EntangleAudioProcessor::reconfigureSafely()
 {
-    /* A layout change can arrive before the host has handed out a rate: getSampleRate() is 0 until
-       prepareToPlay, and a setBusesLayout during construction lands in exactly that window. There
-       is nothing to size against a rate of zero — the DC blocker asserts rather than derive a
-       filter for it, so a reconfigure here would abort the host instead of declining. The
-       prepareToPlay that follows a layout change does the work. */
+    /* A layout change can arrive before the host hands out a rate: getSampleRate() is 0 until prepareToPlay,
+       and a setBusesLayout during construction lands in that window. Nothing can be sized against a rate of
+       zero — the DC blocker asserts rather than derive a filter for it — so this declines and leaves the
+       prepareToPlay that follows a layout change to do the work. */
     if (getSampleRate() <= 0.0)
         return;
 

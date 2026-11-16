@@ -27,10 +27,10 @@ const BusSetup kMonoWithB{"mono-with-b", juce::AudioChannelSet::mono(), true,
                           juce::AudioChannelSet::stereo()};
 const BusSetup kMonoWithEightB{"mono-with-8-b", juce::AudioChannelSet::mono(), true,
                                juce::AudioChannelSet::discreteChannels(8)};
-/* The four shapes §5.20's matrix needs and no leg above used: the whole broadcast family — the mono main
-   with one sidechain channel and the stereo main with one, which had never reached a sample anywhere —
-   and two of the consolidated widths the matrix samples (odd non-dyadic 1/3 and 1/5; 2 and 8 are already
-   above). §5.20 reads them through its own cell table, which carries the expected mapping next to each. */
+/* The four layouts no leg above used: the whole broadcast family — the mono main with one sidechain
+   channel and the stereo main with one — and two of the consolidated widths the matrix samples (odd
+   non-dyadic 1/3 and 1/5; 2 and 8 are sampled above). Callers read them through their own cell table,
+   which carries the expected mapping next to each. */
 const BusSetup kMonoWithMonoB{"mono-with-1-b", juce::AudioChannelSet::mono(), true,
                               juce::AudioChannelSet::mono()};
 const BusSetup kStereoWithMonoB{"stereo-with-1-b", juce::AudioChannelSet::stereo(), true,
@@ -39,9 +39,9 @@ const BusSetup kMonoWithThreeB{"mono-with-3-b", juce::AudioChannelSet::mono(), t
                                juce::AudioChannelSet::discreteChannels(3)};
 const BusSetup kMonoWithFiveB{"mono-with-5-b", juce::AudioChannelSet::mono(), true,
                               juce::AudioChannelSet::discreteChannels(5)};
-/* The three widths M5 item 02's cross product needs to reach twelve accepted triples: 4 is the second dyadic
-   reciprocal, 6 and 7 the second pair of non-dyadic ones, and 7 is the widest sidechain that is neither the
-   ceiling nor already sampled above. */
+/* The three widths that take the accepted set to twelve triples: 4 is the second dyadic reciprocal, 6
+   and 7 the second pair of non-dyadic ones, and 7 is the widest sidechain that is neither the ceiling
+   nor sampled above. */
 const BusSetup kMonoWithFourB{"mono-with-4-b", juce::AudioChannelSet::mono(), true,
                               juce::AudioChannelSet::discreteChannels(4)};
 const BusSetup kMonoWithSixB{"mono-with-6-b", juce::AudioChannelSet::mono(), true,
@@ -279,15 +279,9 @@ Stream renderPureWet(const Shape &shape, const Stream &a, const Stream &b, int c
     return out;
 }
 
-/* The two safety stages re-applied by hand to a raw wet stream, in decision C's order: block the
-   convolved samples, fold the law's centre coefficient in, clip last.
-
-   Duplicated from MixEngine::processHop on purpose. Criterion C3 endorses a by-hand reference so the
-   shipped chain can still be asserted against something independent, and names the risk that comes
-   with it: if the engine's stage order changes and this copy does not, §5.1 — which runs the shell
-   against the real builder — is the leg that says so. The blocker is fed a whole channel in one call;
-   criterion A6 proves its state advances one sample at a time, so a hop-by-hop feed yields the same
-   samples. */
+/* The two safety stages re-applied by hand to a raw wet stream, in the chain's order: block the convolved
+   samples, fold the law's centre coefficient in, clip last. Duplicated from MixEngine::processHop on purpose,
+   so the shipped chain is asserted against something independent of itself. */
 Stream shapedBySafetyStages(const Stream &raw, float gainDb, bool blockDc, bool clip)
 {
     Stream out = raw;
@@ -313,7 +307,7 @@ Stream shapedBySafetyStages(const Stream &raw, float gainDb, bool blockDc, bool 
 
 namespace
 {
-/** A leg label is not a file name: §5.20's labels carry parentheses, commas and spaces. */
+/** A leg label is not a file name: labels carry parentheses, commas and spaces. */
 juce::String dumpFileName(const char *label)
 {
     juce::String name;
@@ -477,9 +471,8 @@ juce::String describe(const StreamDelta &delta)
                                    delta.bitIdentical ? ", bit-identical" : "");
 }
 
-/* The twelve triples engine::gateLayout accepts. Lifted out of §5.20's ten-row cell table by M5 item 02,
-   which is the second consumer: the section keeps selecting nine of them at its own shape plus (1,5,1) again
-   at the shipped default, and the cross product runs all twelve. A function-local static because
+/* The twelve triples engine::gateLayout accepts, in one table shared by every consumer: a section may
+   select a subset at its own shape and a matrix runs all twelve. A function-local static because
    juce::AudioChannelSet is not a literal type, so the BusSetups these point at are dynamically initialised
    and a namespace-scope array here would be a static-initialisation-order dependency across two binaries. */
 const std::array<AcceptedLayout, 12> &acceptedLayouts()

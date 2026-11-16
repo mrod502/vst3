@@ -98,7 +98,7 @@ public:
     static constexpr std::array<int, 7> grainLengthValues { 1024, 2048, 4096, 8192, 16384, 32768, 65536 };
     static constexpr int defaultGrainLengthIndex = 3;
 
-    /** The footprint the cap implies, measured 2026-11-05 by `tools/PrepareFootprint` (Linux aarch64, gcc 13.3,
+    /** The footprint the cap implies, measured by `tools/PrepareFootprint` (Linux aarch64, gcc 13.3,
         Release, `fft::JuceFft`) rather than derived beside it. The engine's own buffers are 12.5F + 6 floats at
         two processed channels and 10.5F + 6 at one — 2F per channel of history plus accumulator, 6F + 6 of shared
         scratch, the F/2 window table, and the transform's 2F of in-place scratch — which an earlier version of

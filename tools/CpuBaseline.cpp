@@ -1,4 +1,4 @@
-/** Per-callback cost of the grain engine, for M7's flattening work (M2 plan §6.7) and for the
+/** Per-callback cost of the grain engine, for M7's flattening work and for the
     item-6 §3 feasibility gate over the chosen grain-length set.
 
     Reports what one host callback costs when it fires a hop and when it does not, because with

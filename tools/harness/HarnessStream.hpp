@@ -24,8 +24,8 @@ constexpr int kMaxBlock = 4096;
     reads as absolute. */
 constexpr double kDeltaTolerance = 1e-5;
 
-/** How far the wet-minus-dry reconstruction of §5.5 has to be trusted: the shell sums wet into the
-    dry stream in float, so recovering it costs ~2 ulp of the dry sample it was added to. */
+/** How far a wet-minus-dry reconstruction can be trusted: the shell sums wet into the dry stream in
+    float, so recovering it costs ~2 ulp of the dry sample it was added to. */
 constexpr double kWetRecoveryTolerance = 1e-6;
 
 using Stream = std::vector<std::vector<float>>;
@@ -69,9 +69,8 @@ Stream chirpStream(int channels, int samples, unsigned seed, float startHz, floa
     click metric or a DC-residue leg wants to be handed. */
 Stream squareStream(int channels, int samples, unsigned seed, float frequencyHz, float amplitude);
 
-/** A DC offset with seeded noise on top of it, which is §5.11's shape reached from a generator rather than
-    from a constant stream: the offset is what the blocker must remove, the noise is what makes the mean of a
-    blocked render measurable rather than exactly zero by construction. */
+/** A DC offset with seeded noise on top of it: the offset is what the blocker must remove, the noise is
+    what makes the mean of a blocked render measurable rather than exactly zero by construction. */
 Stream dcOffsetStream(int channels, int samples, unsigned seed, float offset, float noiseAmplitude);
 
 enum class Poison
@@ -130,8 +129,8 @@ double channelPeak(const Stream &stream, std::size_t channel);
     below bit-exactness rather than beside it, and why it is scoped to a level stage parked at amount 0. */
 bool channelIsExactSilence(const Stream &stream, std::size_t channel);
 
-/** The dry-path model: `in` delayed by `latency`, zeros before it. Same arithmetic as §5.5's
-    `expectDelayedBitExact` without that helper's print, because the matrix tallies its own lines. */
+/** The dry-path model: `in` delayed by `latency`, zeros before it — the arithmetic of a bit-exact delay
+    check without the reporting, so a caller can tally its own lines. */
 Stream delayedBy(const Stream &in, int latency);
 
 /** The same samples times `scale`. The scale lands on the *output* here and on the *input* in the
@@ -149,7 +148,7 @@ double dcComponentOf(const Stream &stream, std::size_t window);
 std::vector<double> settledRms(const Stream &stream, std::size_t window);
 /** How much of a render the clipper is actually shaping. */
 double fractionAboveKnee(const Stream &stream);
-/** max |x[n] - 2x[n-1] + x[n-2]| over every channel — the click ratio M5 §6 row 4 keeps as primary. */
+/** max |x[n] - 2x[n-1] + x[n-2]| over every channel — the primary click ratio. */
 double secondDifferencePeak(const Stream &stream);
 /** Where a render first clears `threshold`, or `size_t`'s max when it never does. */
 std::size_t arrivalIndex(const Stream &stream, double threshold);

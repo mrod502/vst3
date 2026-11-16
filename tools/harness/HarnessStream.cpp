@@ -395,8 +395,8 @@ std::vector<double> settledRms(const Stream &stream, std::size_t window)
     return rms;
 }
 
-/** How much of a render the clipper is actually shaping — the fraction B7 asks for, where "engaged at
-    default settings" is either a measured fact or a guess. */
+/** How much of a render the clipper is actually shaping — whether it is engaged at default settings
+    is either a measured fact or a guess. */
 double fractionAboveKnee(const Stream &stream)
 {
     std::size_t above = 0;
@@ -410,7 +410,7 @@ double fractionAboveKnee(const Stream &stream)
     return total != 0 ? static_cast<double>(above) / static_cast<double>(total) : 0.0;
 }
 
-/** 01 criterion 6's click prototype: max |x[n] - 2x[n-1] + x[n-2]| over every channel. */
+/** The click prototype: max |x[n] - 2x[n-1] + x[n-2]| over every channel. */
 double secondDifferencePeak(const Stream &stream)
 {
     double worst = 0.0;
@@ -425,8 +425,8 @@ double secondDifferencePeak(const Stream &stream)
     return worst;
 }
 
-/** Where a render first clears `threshold` — the index criterion B6 requires not to move when a stage
-    is installed, since a stage that delays would move it by exactly its delay. */
+/** Where a render first clears `threshold` — an index that must not move when a stage is installed,
+    since a stage that delays would move it by exactly its delay. */
 std::size_t arrivalIndex(const Stream &stream, double threshold)
 {
     const std::size_t length = stream.empty() ? 0 : stream[0].size();

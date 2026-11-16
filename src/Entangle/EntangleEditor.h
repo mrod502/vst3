@@ -1,5 +1,14 @@
 #pragma once
 
+#include <Bar.hpp>
+#include <ChoiceBar.hpp>
+#include <Grid.hpp>
+#include <PieDial.hpp>
+#include <Text.hpp>
+#include <Theme.hpp>
+
+#include <optional>
+
 #include "EntangleProcessor.h"
 
 //==============================================================================
@@ -14,18 +23,40 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    /** Pushes every engine truth onto the widgets that reports it, and returns how many of the four truths
+        it actually wrote.
+
+        The number is the point: a truth that has not moved must not be written, because a tick that
+        dirties a label ten times a second repaints the whole sheet. `timerCallback` runs this for the
+        session; `OfflineRender` §5.22 runs it once at a time to count, which is the only way that
+        figure can be measured without a message loop. */
+    int refreshEngineTruths();
+
 private:
     // This reference is provided as a quick way for your editor to
     // access the processor object that created it.
     EntangleAudioProcessor& processorRef;
-    juce::Slider blend;
-    juce::Slider outputGain;
-    juce::Slider normalisationAmount;
-    juce::Slider silenceFloor;
-    juce::ComboBox hopSelector;
-    juce::ComboBox grainSelector;
+    ui::Theme theme;
+
+    ui::Text wordmark;
+    ui::Text statusLine;
+    ui::Text layoutReadout;
+    ui::Text grainReadout;
+    ui::Text blendReadout;
+    ui::Text volumeCaption;
+    ui::Text windowCaption;
+    ui::Text eqCaption;
+    ui::Text vibesCaption;
+    ui::Text waveformCaption;
+
+    ui::Bar outputGain;
+    ui::Bar normalisationAmount;
+    ui::Bar silenceFloor;
+    ui::PieDial blend;
+    ui::ChoiceBar hopSelector;
+    ui::ChoiceBar grainSelector;
     juce::TextButton bypassToggle;
-    juce::LookAndFeel_V4 otherLookAndFeel;
+
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> blendAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> outputGainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> normalisationAmountAttachment;
@@ -33,26 +64,20 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> hopAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> grainAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment;
-    juce::Label hopCaption;
-    juce::Label grainCaption;
-    juce::Label normalisationCaption;
-    juce::Label silenceFloorCaption;
-    /** Reports the grain length actually running, in samples and ms, and says so whenever the
-        shell's 2x-hop clamp moved it away from the dial position. */
-    juce::Label grainReadout;
-    /** Reports the blend position the mix stage is actually at, which is not the dial's whenever the
-        sidechain bus is disabled and the law pins the effect off (D-011). */
-    juce::Label blendReadout;
-    /** The processor's prepare-time layout report (D-023) — one line naming what the plugin was *told*,
-        which is the record a host sweep needs because the host's own labels are not it (F-015). It is
-        longer than any size this editor ships at, so it clips here and travels whole in the tooltip: the
-        editor is mid-rewrite (AGENTS §12) and a diagnostic line does not get to redesign it. */
-    juce::Label layoutReadout;
-    void updateGrainReadout();
-    void updateBlendReadout();
-    void updateLayoutReadout();
+
+    bool updateGrainReadout();
+    bool updateBlendReadout();
+    bool updateLayoutReadout();
+    bool updateInertStates();
     void timerCallback() override;
-    void adderallPrescriptionChanged(juce::Slider* slider);
+
+    /** The last text each readout carried, and the last sidechain state the inert widgets saw. An empty
+        string means "never pushed", so the first pass after construction writes and every later pass writes
+        only when the truth it reports has actually moved. */
+    std::optional<bool> shownSidechain;
+    juce::String shownGrainText;
+    juce::String shownBlendText;
+    juce::String shownReport;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EntangleAudioProcessorEditor)
 };

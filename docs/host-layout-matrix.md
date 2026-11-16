@@ -103,13 +103,26 @@ group of lines; a row without them is an open row wearing an answer's clothes.
 | **P3** | On a mono main try send widths 1, 2, 3, 5, 8; on a stereo main try 2 and 3 | the line per attempt, plus what the host's menu offered | the consolidated family's reachability, and F-015 in the wild: the stereo-main case should be refused — record what the host *does* about it |
 | **P4** | Attempt a refusal: a 5.1 main, a 9-wide send, mono-in/stereo-out where offered | the host's response verbatim (greyed out / error text / silently routed something else) and the line after, which must be unchanged | M4 §7 row 5's "rejected cleanly" outside JUCE's own paths; amends F-015 with observed behaviour |
 | **P5** | Put the plugin on a surround or ambisonic bus | the `*Name=[…]` fields verbatim | **D-021 B's third trigger.** The console answer is already on record (§5.21 C1b: `6:5.1 Surround`, `8:7.1 Surround`, `4:1st Order Ambisonics`, `9:2nd Order Ambisonics`); what a host adds is whether it will route those shapes to a plugin at all, and what it says about folding a surround send |
-| **P6** | Save a session with a consolidated layout, quit, reload | `prepares=`/`skipped=` after load, and whether a stop/start kept the tail | D-022 B's real-world premise — a host that re-applies layouts on load and *was* skipped is the answer §5.19 can only simulate |
+| **P6** | Save a session with a consolidated layout, quit, reload. **First settle M9 row 7 — this is the first save, and the truncated four-char code becomes a permanent ID the moment it succeeds** | `prepares=`/`skipped=` after load, and whether a stop/start kept the tail | D-022 B's real-world premise — a host that re-applies layouts on load and *was* skipped is the answer §5.19 can only simulate |
 | **P7** | Read the latency the host displays; move the hop dial | the displayed compensation vs `R=`, and whether it follows | AGENTS §7's latency honesty at the host seam. Facts for the parked `R := W` question, no decision |
 | **P8** | Feed L/R **antiphase** into an N-wide send on a mono main, blend to wet | does the wet path go quiet? host + version + date | confirms the delivered width audibly (D-018's fold sums to zero). The *judgement* about whether the fold sounds right is M9 row 2's — this row only says it happened on a named host |
 
 A probe may legitimately close with **"this host cannot do that"** — say what it offered instead (P3 in
 particular: "send is fixed mono, greyed out" is a useful answer, and D-021's revisit note says a negative changes
 nothing about the rule).
+
+**Settle `plan/M9-preference-tweaks.md` row 7 before the first save, and P6 is a save (added 2026-11-09).**
+`PLUGIN_CODE entangle` is eight characters, so JUCE truncates it: the define on the built graph is
+`JucePlugin_PluginCode = 0x656e7461` = `"enta"` — all-lowercase, where JUCE's own convention asks for one uppercase
+letter. Beside it, `JucePlugin_CFBundleIdentifier` is `com.yourcompany.vstplug`, `JucePlugin_Manufacturer` is
+`"yourcompany"` and `JucePlugin_Version` is `0.0.1`; `PLUGIN_MANUFACTURER_CODE mrod` is the one identity field
+already set properly (`0x6d726f64`). All five read off `build/release/build.ninja` on 2026-11-09, from the
+`src/Entangle/CMakeLists.txt` target, which sets nothing else identity-wise.
+None of that stops the bundle loading, which is exactly why this document cannot see the cost: the four-character
+code *is* the plugin's unique ID, so the first project a host saves while referencing it makes any later change
+orphan every saved instance of the old one, and on macOS the bundle identifier is what the scan cache keys on.
+Working the checklist top to bottom therefore spends that deadline on P6 — silently, and on every host after the
+first. It is a one-sitting decision for the user, free before the first save and expensive after it.
 
 ## 4. Per-host template
 
@@ -128,6 +141,7 @@ P3 mono main:  1 → <line>   2 → <line>   3 → <line>   5 → <line>   8 →
 P4 <shape>: host response "<verbatim>"; line after: <line>
 P5 <bus shape>: mainInName=[<...>] sideName=[<...>] — verdict: <accepted/refused + what happened>
 P6 after reload: prepares=<n> skipped=<n>; tail survived stop/start: yes/no
+   identity at this save: <the four-char code / bundle id / version actually built> — settled before saving? yes/no
 P7 host shows <n> samples vs R=<n>; moved with the hop dial: yes/no
 P8 antiphase on a <n>-wide send: wet went quiet / did not change / send not available
 Notes:

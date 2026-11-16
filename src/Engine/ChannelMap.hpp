@@ -143,10 +143,9 @@ constexpr ResolvedChannelMap ChannelMap::resolve(int chA, int chB, int channelsO
     ResolvedChannelMap resolved{ ChannelMapStatus::ok, ChannelMap{} };
     resolved.map.channels = channelsOut;
 
-    /* The guards above leave channelsOut in [1, ceiling] and ceiling at most kMaxChannels. Restating the
-       bound here is what keeps the fill provably in range for the optimiser — written without it, GCC
-       vectorises the loop as a memset whose trip count it takes from the signed argument alone and warns
-       -Wstringop-overflow on both arrays. */
+    /* The guards above leave channelsOut in [1, ceiling] and ceiling at most kMaxChannels. Restating the bound
+       keeps the fill provably in range for the optimiser: without it GCC vectorises the loop as a memset whose
+       trip count comes from the signed argument alone, and warns -Wstringop-overflow on both arrays. */
     const auto slots = static_cast<std::size_t>(channelsOut < kMaxChannels ? channelsOut
                                                                            : kMaxChannels);
     for (std::size_t slot = 0; slot < slots; ++slot)

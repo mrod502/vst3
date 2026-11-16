@@ -36,6 +36,10 @@ target_link_libraries(${PROJECT_NAME}
         juce::juce_gui_basics
         juce::juce_audio_utils
     PUBLIC
+        # PUBLIC because the editor's header names the kit types, so anything that includes
+        # EntangleEditor.h — OfflineRender §5.22 — needs the same include paths to read it. Ui
+        # arrives transitively, the way Fft does above.
+        UiJuce
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags

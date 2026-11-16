@@ -12,7 +12,7 @@
 
 namespace dsp
 {
-/** Holds the convolved stream at `√(envA · envB)`: the level stage D-015 defines and M3 item 04 ships.
+/** Holds the convolved stream at `√(envA · envB)`: the level stage D-015 defines.
 
     Per hop, per channel, three `LevelDetector`s read A, B and the wet hop, and the wet hop is scaled in
     place by

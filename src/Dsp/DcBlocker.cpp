@@ -13,7 +13,7 @@ constexpr double kPi = 3.14159265358979323846;
 /** sin(w0) / (2Q) at Q = 1/sqrt(2) — the maximally flat, still-monotone Q — is sin(w0) * sqrt(2)/2. */
 constexpr double kAlphaPerSin = 0.70710678118654752440;
 
-/** ln(1e-6), the level A1 holds the output to, as an exponent for the envelope bound. */
+/** ln(1e-6), the level the settling bound holds the output to, as an exponent. */
 constexpr double kLogMicro = -13.815510557964274;
 
 /** Headroom on that bound: a step also drives the direct path, and a Butterworth pair overshoots by

@@ -8,7 +8,7 @@ struct EngineConfig
     double sampleRate = 0.0;
     int hop = 0;            ///< H, the internal step in samples.
     int maxChannels = 0;    ///< Channel capacity the Engine must be ready for: the processed count,
-                            ///  never a bus width — a narrow side is resolved before the seam (M4 §5).
+                            /// never a bus width — a narrow side is resolved before the seam.
     int latencySamples = 0; ///< Declared delay R; see D-004.
     int grainLength = 0;    ///< L, the analysis window length. 0 where the engine has none.
 };

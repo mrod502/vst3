@@ -6,7 +6,7 @@
 
 namespace dsp
 {
-/** Total DC removal for a stream that has to keep its band: M3 §4.3's blocker, on the convolved path.
+/** Total DC removal for a stream that has to keep its band, on the convolved path.
 
     Second-order Butterworth high-pass, transposed direct form II, at the corner passed to the
     constructor (cornerHz is the shipped value).

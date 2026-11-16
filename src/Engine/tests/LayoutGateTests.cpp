@@ -468,7 +468,7 @@ TEST_CASE("layout gate: the chB <= chA paraphrase over-admits and this gate refu
                 ++gateOverAdmitted;
         }
 
-    /* Measured 2026-11-04 and re-measured here rather than quoted: 21 asymmetric triples plus (1, 9, 1). */
+    /* Measured and re-measured here rather than quoted: 21 asymmetric triples plus (1, 9, 1). */
     CHECK(paraphraseOverAdmits == 22);
     /* The gate refuses every one of them — which is exactly the assertion the paraphrase-shaped gate
        fails, 21 + 1 ways. */

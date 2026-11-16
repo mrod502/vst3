@@ -135,11 +135,9 @@ void MixEngine::fillCoefficients() noexcept
     {
         const float rawBlend = blendRamp.step();
 
-        /* The dry bus follows the sign of p, so a travel from -1 to +1 has to hand over from A to B
-           somewhere. Landing exactly on p = 0 makes that hand-over silent: w_dry(0) == 0, so no
-           sample of the outgoing bus is dropped and none of the incoming one is picked up early.
-           The sign is tracked on the un-snapped value, or the sample after the landing would look
-           like another crossing and pin the dial at zero. */
+        /* The dry bus follows the sign of p, so a travel from -1 to +1 hands over somewhere; landing exactly on
+           p = 0 makes it silent, since w_dry(0) == 0 drops no outgoing sample and picks up no incoming one
+           early. The sign is tracked on the un-snapped value, or the next sample looks like another crossing. */
         const bool crossed = (previousBlend < 0.0f) != (rawBlend < 0.0f);
         previousBlend = rawBlend;
         const float p = crossed ? 0.0f : rawBlend;
@@ -175,10 +173,9 @@ void MixEngine::processHop(const float* const* a, const float* const* b, float* 
                                        scratchPtrs[static_cast<std::size_t>(channel)], hop);
     }
 
-    /* Then the level stage, on the blocked stream and before the law (item 04 decision B): after the
-       blocker, so DC cannot inflate the reading it corrects for, and before the sum, so `coefWet`'s exact
-       zero at |p| = 1 still hands through the dry bus untouched. It scales scratch in place and reads A and
-       B here, inside the hop seam, where Engine's contract guarantees `out` is not aliased with either. */
+    /* Then the level stage, on the blocked stream and before the law: after the blocker, so DC cannot inflate
+       the reading it corrects for, and before the sum, so `coefWet`'s exact zero at |p| = 1 still hands through
+       the dry bus. It reads A and B inside the hop seam, where Engine's contract guarantees `out` is unaliased. */
     if (levelNormalizer != nullptr)
     {
         for (int channel = 0; channel < numChannels; ++channel)

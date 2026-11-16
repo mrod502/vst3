@@ -36,10 +36,9 @@ void LevelDetector::prepare(double sampleRate, int channels)
     if (window < 1)
         window = 1;
 
-    /* The inner mean-square stage is not a fourth control: it exists to take the ripple out of the
-       follower's input, and the only scale it has to be right against is the faster of the two time
-       constants the caller did choose. Divisor and lag are what D-014's measurement of criteria 1
-       and 3 sitting in opposite directions is settled on. */
+    /* The inner mean-square stage is not a fourth control: it exists to take the ripple out of the follower's
+       input, and the only scale it has to be right against is the faster of the two time constants the caller
+       chose. Its divisor and lag are what D-014 settled on. */
     innerMsValue = std::min(attackMsValue, releaseMsValue) / innerTimeConstantDivisor;
     innerCoefficient = poleFor(innerMsValue, sampleRate);
     attackCoefficient = poleFor(attackMsValue, sampleRate);
@@ -67,12 +66,9 @@ std::size_t LevelDetector::silenceSamples(double fromReading) const noexcept
     if (!(fromReading > envelopeFloor))
         return 0;
 
-    /* The published reading decays exponentially at 1/releaseMs, so it reaches the floor after
-       tau · ln(from / floor) samples — plus the inner stage's own area delay, which is 2 · tau_inner
-       because its target falls as exp(-u/2) and ∫(1 - exp(-u/2)) du = 2. The last sample of margin is
-       for the comparison itself: the bound is checked against a state the recursion reached in
-       floating point, and a reading on the boundary to within a rounding step would otherwise decide
-       the flush on evaluation order. */
+    /* The published reading decays at 1/releaseMs, so it reaches the floor after tau · ln(from / floor)
+       samples, plus the inner stage's own area delay of 2 · tau_inner, plus one sample of margin so that a
+       reading on the boundary does not decide the flush on evaluation order. */
     const double releaseTimeSamples = releaseMsValue * sampleRateValue / 1000.0;
     const double innerTimeSamples = innerMsValue * sampleRateValue / 1000.0;
     const double needed

@@ -985,7 +985,7 @@ TEST_CASE("the stepped known-bad is the same law as the shipped one while the pa
 
 TEST_CASE("the click metric discriminates the ramped coefficients from the stepped known-bad")
 {
-    /* Measured 2026-10-29 at 48 kHz with hop 128 and a 512-sample host callback, on the six
+    /* Measured at 48 kHz with hop 128 and a 512-sample host callback, on the six
        automations below, each a ratio of d2 against the same content rendered with the parameters
        static:
 

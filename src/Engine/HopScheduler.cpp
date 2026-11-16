@@ -26,14 +26,9 @@ void HopScheduler::prepare(const SchedulerConfig& configToUse)
     const int sideSources = std::max(configToUse.sidechainChannels, 0);
     const int processed = configToUse.map.channels;
 
-    /* An index naming a ring that is about not to exist means the caller resolved the map against
-       widths other than the ones it passed. Rejected here, on the message thread, rather than on the
-       first hop of a live callback, which is where the same mismatch wrote past hopBufferB in a layout
-       the shipped gate accepts (F-014). Thrown rather than asserted because prepare is the one place a
-       failure can be reported — the same choice GrainConvolutionEngine::prepare makes — and an abort
-       is not observable to a leg running in the same process. Validated before anything is assigned,
-       so a rejected prepare leaves the previous configuration standing rather than a half-written one
-       the callback would then read. */
+    /* An index naming a ring that is about not to exist means the map was resolved against widths other than
+       the ones passed, so it is rejected here on the message thread and not on a live hop (F-014): thrown, and
+       validated before any member is assigned, so a rejected prepare leaves the previous configuration standing. */
     if (processed <= 0 || processed > kMaxChannels)
         throw std::invalid_argument("hop scheduler needs a resolved channel map");
     for (int slot = 0; slot < processed; ++slot)

@@ -168,10 +168,9 @@ inline void LevelDetector::processChannel(std::size_t channel, const float* samp
             --state.nonZero;
         if (sample != 0.0f)
             ++state.nonZero;
-        /* An all-zero window holds a sum of exactly zero: a running total is only as good as the
-           subtractions that built it, and asserting the exact answer here is what lets an idle
-           channel read 0.0f instead of a cancellation residue. The clamp is the same argument for a
-           window that still holds a few tiny samples, where a negative residue would reach a sqrt. */
+        /* An all-zero window holds a sum of exactly zero: a running total is only as good as the subtractions
+           that built it, so asserting the exact answer here lets an idle channel read 0.0f rather than a
+           cancellation residue. The clamp is the same argument for a window holding a few tiny samples. */
         state.sumOfSquares = state.nonZero == 0 ? 0.0 : (sum < 0.0 ? 0.0 : sum);
 
         const std::uint32_t position = state.position;

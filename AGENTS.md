@@ -94,14 +94,14 @@ Read the package doc before working in that directory.
 
 | Path | Owns |
 |---|---|
-| `src/Container/AGENTS.md` | `container::CircularBuffer` — fixed-capacity rings, the power-of-two cost |
+| `src/Container/AGENTS.md` | `container::CircularBuffer`, `container::TraceRing` — fixed-capacity rings, the power-of-two cost, the drop-oldest publication |
 | `src/Dsp/AGENTS.md` | `DcBlocker`, `SoftClipper`, `LevelDetector`, `LevelNormalizer` — JUCE-light primitives |
-| `src/Engine/AGENTS.md` | the `Engine` seam, `MixEngine`, `ChannelMap`, `LayoutGate`, `ReconfigureKey`, `HopScheduler` |
+| `src/Engine/AGENTS.md` | the `Engine` seam, `MixEngine`, `ChannelMap`, `LayoutGate`, `ReconfigureKey`, `HopScheduler`, `TraceSink` |
 | `src/Fft/AGENTS.md` | `fft::IFft`, the `Dft` oracle, `multiplyHalfSpectrum` |
 | `src/FftJuce/AGENTS.md` | `fft::JuceFft` — the only JUCE-aware transform |
 | `src/Grain/AGENTS.md` | mode 1's wet path: history, OLA, window, `GrainConvolutionEngine` |
 | `src/Ui/AGENTS.md` | colour tokens, type ramp, grid and kit geometry — the interface's light half |
-| `src/UiJuce/AGENTS.md` | `ui::Theme`, `FontFactory`, the five kit widgets |
+| `src/UiJuce/AGENTS.md` | `ui::Theme`, `FontFactory`, the five kit controls, the two display panels |
 | `src/Entangle/AGENTS.md` | the plugin shell: processor, editor, `EngineChain` |
 | `tools/AGENTS.md` | harness libraries, `OfflineRender`, the Catch2 shell programs, measurement instruments |
 | `docs/decisions.md` | every decision (D-xxx) and finding (F-xxx) that constrains future work |
@@ -216,6 +216,10 @@ against them, never through them.
   types stay private.
 * **Conversions live at the boundary** — JUCE types meet the project's types in the shell, never inside
   a primitive.
+* **Instrumentation is injected at the seam, never reached through one.** A display borrows storage the shell
+  owns — `engine::TraceSink` installed beside `installLevelNormalizer`, reading a `container::TraceRing` the
+  processor owns (D-027). Nothing below the shell names a UI, and no accessor hands hop state to the message
+  thread.
 * **A new third-party dependency needs a written decision** covering licence and build impact before it
   lands.
 

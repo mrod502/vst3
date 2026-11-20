@@ -156,6 +156,18 @@ double kitScaleFor (const juce::Component& component) noexcept
     return theme != nullptr ? theme->scale () : kReferenceScale;
 }
 
+int lineHeightFor (const juce::Component& component, TypeRole role)
+{
+    auto* theme = dynamic_cast<Theme*> (&component.getLookAndFeel ());
+
+    /* fontFor builds and caches on first ask, so this is not a const read; a component under somebody
+       else's skin has no ramp to resolve and gets 0, which places no row rather than an undeclared one. */
+    if (theme == nullptr)
+        return 0;
+
+    return static_cast<int> (theme->fontFor (role, Theme::fontScaleFor (theme->scale ())).getHeight ());
+}
+
 juce::LookAndFeel_V4::ColourScheme Theme::makeScheme()
 {
     /* Five tokens into nine slots: ground once, track twice, fill twice, ink four times, trace not at all.

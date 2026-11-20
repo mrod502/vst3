@@ -29,6 +29,8 @@ add_library(
     ChoiceBar.cpp
     PieDial.cpp
     Text.cpp
+    ResponsePanel.cpp
+    EnvelopePanel.cpp
     )
 
 target_include_directories(UiJuce PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

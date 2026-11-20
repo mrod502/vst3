@@ -8,6 +8,7 @@ add_executable(UiTests
     BarGeometryTests.cpp
     PieGeometryTests.cpp
     KitGeometryTests.cpp
+    DisplayTraceTests.cpp
     SourcePolicyTests.cpp
     )
 

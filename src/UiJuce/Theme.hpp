@@ -27,6 +27,14 @@ namespace ui
     size the mockup was measured at instead of at nothing. */
 [[nodiscard]] double kitScaleFor (const juce::Component& component) noexcept;
 
+/** The line height a role's face occupies for a component that lays its own type rows — `kitScaleFor` and
+    `fontScaleFor` in one call, so a widget that places text does not re-derive the pair. JUCE lays a wrapped
+    line one em below the last, so the em is the row pitch and not the cap height.
+
+    Returns 0 under somebody else's look and feel, where there is no ramp to resolve — the same answer
+    `Text::paint` gives for the word itself. */
+[[nodiscard]] int lineHeightFor (const juce::Component& component, TypeRole role);
+
 /** The skin: the five tokens as a ColourScheme, the seven roles as Fonts, the kit's flat paint overrides,
     and the grid's text placed by cap height. Constructed once by the editor and installed with
     setLookAndFeel (item 03).

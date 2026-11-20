@@ -14,7 +14,7 @@ display.
 | `Grid.hpp` | the sheet's millimetres (the only place they are named), `kOf(widthPx)`, and a `Grid` answering `box(1…12)`, `span(col, row, cols)`, `marginPx`, `gutterPx`, `cellPx`. Also the window range the editor offers: `kMinimumWindowWidthPx` 595, `kMaximumWindowWidthPx` 2380, their heights, and `kSheetAspectRatio` |
 | `BarGeometry.hpp` | a bar's body (17.7 mm), the `round(0.8 mm × k)` inset applied **once** in `insetAt`, the value fill (`fillRect()`, and `fillRect(true)` for the active state), the 19.8 mm label column, `valueForX` / `xForValue`, and `hitRect()` — empty for a `readOnly` meter |
 | `PieGeometry.hpp` | `wedgeAngles(value, mode)` for a full turn and a symmetric half turn, the face's centre and inscribed radius, `forEachWedgePoint` (the walk a caller turns into a path), `radialQuad` and `datumRadialWidthAt` for the datum's ink mark, `hitTestPie`, and `discRectOf(face)` — the disc inscribed in the face |
-| `PanelGeometry.hpp` | the ink display panel's content inset — one gutter — and `inkContentRect(panel, k)`, inset once and symmetric |
+| `PanelGeometry.hpp` | the ink display panel's content inset — one gutter — and `inkContentRect(panel, k)`, inset once and symmetric; the trace contract below it |
 | `TextGeometry.hpp` | `kRotationRadians` (−90°), `kRotatedCaptionInsetMm` (2.0), the `TextOrientation` / `TextAlignment` / `TextSurface` vocabularies, `kInkFieldWordToken`, and the rotated caption's placement |
 | `snapToQuantum` | the design's one quantisation expression |
 
@@ -39,6 +39,27 @@ so it rounds once as a multiple of the em — `round(n × em)`, not `n` times as
 | Active | fill flush, nothing else differs | — |
 | Inert (`!isEnabled()`) | body traded for `ground`, words kept | never a hue, never a stroke |
 | Read-only meter | enabled, no active state, empty `hitRect()` | keeps reporting while refusing the pointer |
+
+## The trace contract (`PanelGeometry.hpp`)
+
+Both display panels draw from these, and every figure a leg checks is here rather than inside a `paint()`.
+
+| Name | Contract |
+|---|---|
+| `kTraceWindowSeconds` (2.0) | the scrolling window; the publication's ring is sized against it, so a panel never asks for history the writer cannot hold |
+| `kMaxTraceColumns` (1030) | the widest ink field the sheet can produce — a two-cell span at the resize ceiling less one content inset — rounded up to the next ten. Every column buffer is this size and none grows |
+| `kMaxTraceHistory` (6000) | 2 s at the fastest hop and rate the shell configures (H = 64 at 192 kHz). Past it a trace stops short of the left edge rather than a buffer growing |
+| `traceThicknessAt(k)` | one column at the reference width, two at the ceiling, never zero |
+| `tracePixelsPerSecond(width, seconds)` | the panel's width over the window; 0 for a degenerate rect |
+| `CorrectionAxis` / `EnvelopeAxis`, `correctionYAt` / `envelopeYAt` | value → y on an axis **handed in** — the shell gives `gainRangeDb` and the gate parameter's own bound. A panel invents no range, and a degenerate axis answers the middle line instead of dividing by zero |
+| `amplitudeToDb` | the log, with silence at `lowest()` so it lands on the axis's bottom edge rather than on a floor invented here |
+| `HoldPolicy`, `decimateToColumns` | readings → columns, **peak-hold or valley-hold, never an average**. Oldest first with the newest pinned to the last column; columns before the returned index are untouched so the caller draws nothing there, and a column that falls between two readings steps to the earlier one rather than gapping |
+| `Spread`, `spreadOf` | the min and max of one hop's per-channel figures. One channel gives two equal figures, which is what mono actually looks like |
+| `kInkFieldRuleToken` | the one rule inside an ink field is `ground`, not ink: inside an ink field the tints are the ink, and ink on ink is invisible |
+
+**No arithmetic in `paint()`.** A panel maps values into paths in its own `refresh()` — on a data change and
+on a resize — and `paint()` fills what is already built. A resize re-decimates from the held history rather
+than stretching columns measured against the old width.
 
 ## Threading
 
@@ -65,5 +86,6 @@ so quote the count with the status.
 
 ## Decisions
 
-D-024 (tokens, ramp, state vocabulary), D-025 (the shipped face), D-026 (window range), F-022, F-023,
+D-024 (tokens, ramp, state vocabulary), D-025 (the shipped face), D-026 (window range), D-027 (the trace
+window and the axis-is-the-bound / rule-is-the-value split), F-022, F-023,
 F-024 — `docs/decisions.md`.

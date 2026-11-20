@@ -41,4 +41,14 @@ public:
 private:
     Mode panelMode;
 };
+
+/** Appends one trace to `path` as a filled ribbon: a flat band `thickness` px wide following `columnYs`
+    from `first`, `count` columns on, with column 0 at `left`. Filled rather than stroked because the design
+    contains no stroke (spec §1), and one closed polygon per trace is what lets a curve be a flat fill of a
+    single token.
+
+    `path` is the caller's and is cleared before it is built, so a panel that repaints without new data
+    reuses the storage it already grew. */
+void appendTraceRibbon (juce::Path& path, const int* columnYs, std::size_t first, std::size_t count,
+                        int thickness, int left);
 }

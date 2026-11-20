@@ -1,8 +1,8 @@
 # UiJuce
 
 The skin and the kit: the one `LookAndFeel_V4` that renders the design, the one place a face is
-obtained, and the five widgets the editor uses. Every rect, inset, angle, colour and em figure comes
-from `src/Ui` — **no widget computes geometry or names a size of its own.**
+obtained, and the five controls plus the two display panels the editor uses. Every rect, inset, angle,
+colour and em figure comes from `src/Ui` — **no widget computes geometry or names a size of its own.**
 
 | File | Role |
 |---|---|
@@ -12,6 +12,8 @@ from `src/Ui` — **no widget computes geometry or names a size of its own.**
 | `Bar`, `PieDial` | `Slider` subclasses (bar control, dial control) |
 | `ChoiceBar` | `ComboBox` |
 | `Text` | `Label` |
+| `ResponsePanel` | boxes 7–8: the level stage's applied correction, min and max across the processed channels, on a `±gainRangeDb` axis with one unity rule |
+| `EnvelopePanel` | boxes 11–12: the three buses the level stage follows (`track` / `fill` / `trace`), on a dBFS axis handed in, with one rule at the gate's live value |
 
 ## Rules the skin keeps
 
@@ -40,6 +42,16 @@ from `src/Ui` — **no widget computes geometry or names a size of its own.**
   `hitTestPie` answers with are one shape.
 - **Text is measured, not assumed** — a caption's box comes from the ramp and the grid; the kit clips
   at the box edge.
+- **The display panels draw, they do not decide.** A panel is handed arrays of readings and the axis figures,
+  holds the window it was last given, and builds its paths in `refresh()`. It reads no processor and borrows
+  nothing: what it plots is a copy. Its axis and its rule are **separate** inputs (`setAxisDbRange`,
+  `setGateDb`) so the rule can move inside a fixed field; `setAxisDbRange` re-plots the held history, because
+  a trace drawn on the old scale under labels naming the new one is two claims about one signal. With nothing
+  advancing a panel says `idle`, holds its traces, and decimates, rebuilds and repaints nothing — a flat line
+  drawn at zero would read as a held signal.
+- **Anything read out of a control is set after its attachment exists.** A kit control holds its own default
+  (0.0) until its `SliderAttachment` is built, so a constructor that feeds a widget's value into a panel must
+  run below the attachment block — F-025, which is what a §5.23 leg reddened.
 
 ## Threading
 

@@ -108,9 +108,12 @@
 #include <Bar.hpp>
 #include <BarGeometry.hpp>
 #include <ChoiceBar.hpp>
+#include <EnvelopePanel.hpp>
 #include <Grid.hpp>
 #include <Palette.hpp>
+#include <PanelGeometry.hpp>
 #include <PieDial.hpp>
+#include <ResponsePanel.hpp>
 #include <Text.hpp>
 #include <Theme.hpp>
 
@@ -120,6 +123,9 @@
 #include "EngineChain.h"
 #include "EntangleEditor.h"
 #include "EntangleProcessor.h"
+#include "JuceTransformFactory.h"
+
+#include <TraceSink.hpp>
 
 #include <algorithm>
 #include <array>
@@ -5122,8 +5128,11 @@ bool shellGeometryFollowsTheGrid(MatrixReport &report)
                 juce::String::formatted("bar %d, pitch %d, cell %d, third row ends %d from the box top", body,
                                         pitch, box6.h, 2 * pitch + body));
 
-    const ui::Rect empty[] = {grid.box(3), grid.box(5), grid.span(2, 1, 2), grid.span(2, 2, 2),
-                              {box6.x, box6.y + 2 * pitch, box6.w, body}};
+    /* Two cells stay reserved after M10 item 04: box 3 for the EQ and box 5 for the live-IR picker. The other
+       three of the five this leg used to enumerate — box 6's third row and the two two-cell spans — are the
+       meter and the panels that item ships, so their occupancy is §5.23's geometry leg rather than an absence
+       this one can still claim. */
+    const ui::Rect empty[] = {grid.box(3), grid.box(5)};
     int intruders = 0;
     juce::String intruderNames;
     for (int i = 0; i < rig.editor->getNumChildComponents(); ++i)
@@ -5138,10 +5147,9 @@ bool shellGeometryFollowsTheGrid(MatrixReport &report)
                              + " in " + rectText(rectOf(area));
         }
     }
-    report.line(intruders == 0, "boxes 3, 5, 7-8, 11-12, box 6 row 3",
-                "C7 no component occupies a reserved cell",
-                intruders == 0 ? juce::String("17 children, none in a reserved cell") : intruderNames);
-    report.line(rig.editor->getNumChildComponents() == 17, "sheet", "C1 seventeen components, no spare",
+    report.line(intruders == 0, "boxes 3, 5", "C7 no component occupies a reserved cell",
+                intruders == 0 ? juce::String("20 children, none in a reserved cell") : intruderNames);
+    report.line(rig.editor->getNumChildComponents() == 20, "sheet", "C1 twenty components, no spare",
                 juce::String::formatted("%d children", rig.editor->getNumChildComponents()));
 
     /* The stack in box 2 grows upward when the typeface is taller than the one this was fitted to, so the
@@ -5861,16 +5869,13 @@ bool reservedCellsAreEmpty(MatrixReport &report)
 {
     ShellRig rig{harness::kStereoWithB, kDefault};
     const ui::Grid grid = ui::Grid::reference();
-    const int body = ui::BarGeometry::bodyHeightAt(grid.k());
-    const int pitch = (grid.cellPx().h - body) / 2;
-    const ui::Rect box6 = grid.box(6);
 
-    const std::array<std::pair<const char *, ui::Rect>, 5> reserved{{
+    /* Box 6's third row and the two spans held nothing until M10 item 04 filled them; what stays reserved is
+       the EQ's cell and the live-IR picker's, and their emptiness is still this leg's claim. The panels that
+       replaced the other three are painted in §5.23, where the ink field is the thing under test. */
+    const std::array<std::pair<const char *, ui::Rect>, 2> reserved{{
         {"box 3 (EQ)", grid.box(3)},
         {"box 5 (live IR)", grid.box(5)},
-        {"box 6 row 3 (04 tier 1)", {box6.x, box6.y + 2 * pitch, box6.w, body}},
-        {"boxes 7+8 (04 tier 1)", grid.span(2, 1, 2)},
-        {"boxes 11+12 (04 tier 1)", grid.span(2, 2, 2)},
     }};
 
     const juce::Image sheet = paintShell(*rig.editor);
@@ -6006,6 +6011,458 @@ bool checkShellSheet()
     return passed && report.failed == 0;
 }
 
+/** The `ui::Rect` form of a JUCE rect — the direction §5.22's `rectOf` does not go, needed because the light
+    half is the authority here and it takes its own type. */
+ui::Rect uiRectOf(const juce::Rectangle<int> &rect) noexcept
+{
+    return {rect.getX(), rect.getY(), rect.getWidth(), rect.getHeight()};
+}
+
+/** The shipped chain, composed by the shipped builder, with one difference: the level stage is installed by
+    this rig, which is the only way a leg can read the stage's own getters — the authority criterion 1 is
+    asked against — without the shell handing out a borrow of an object the audio thread writes.
+
+    `NoNormalizer` is the shipped chain minus the stage, so installing one here reproduces `Shipped` exactly
+    (`EngineChain.h`); what ships and what this rig runs are the same builder's output, and the leg's snapshot
+    comes from the same `MixEngine::makeTraceSnapshot` the plugin runs. A quiesced transport is what makes the
+    getters readable at all: nothing else touches them once the hops stop (F-017). */
+struct TraceChainRig
+{
+    JuceTransformFactory factory;                            ///< outlives the engine that borrows it
+    container::TraceRing<engine::TraceSnapshot> ring{128};   ///< outlives the sink that writes it
+    std::unique_ptr<engine::MixEngine> chain;
+    dsp::LevelNormalizer *stage = nullptr;                   ///< borrowed; this rig owns it through the chain
+
+    TraceChainRig(const harness::Shape &shape, int channels)
+    {
+        chain = entangle::makeChain(factory, entangle::ChainVariant::NoNormalizer);
+        auto owned = std::make_unique<dsp::LevelNormalizer>();
+        stage = owned.get();
+        chain->installLevelNormalizer(std::move(owned));
+
+        engine::EngineConfig config;
+        config.sampleRate = harness::kSampleRate;
+        config.hop = shape.hop;
+        config.maxChannels = channels;
+        config.latencySamples = shape.hop; ///< R, the one-hop placeholder policy D-004
+        config.grainLength = EntangleAudioProcessor::clampGrainLength(shape.chosen, shape.hop);
+        chain->prepare(config);
+        chain->installTraceSink(engine::TraceSink{&ring});
+    }
+};
+
+/** C1 — the snapshot is the stage's own four figures, per processed channel, compared with `==`.
+
+    The material is different per channel on purpose: `gain` is decided per channel (D-020), so a snapshot
+    that assembled channel 0's reading into every slot would pass an equality test built on identical channels
+    and fails this one. The stage's getters are read after the last hop, from this thread, with nothing left
+    running — the producer cannot be its own witness. */
+bool publishedFiguresAreTheStagesOwn(MatrixReport &report)
+{
+    constexpr int kChannels = 2;
+    constexpr int kHops = 40;
+    const harness::Shape shape = kDefault;
+    const int total = kHops * shape.hop;
+
+    TraceChainRig rig(shape, kChannels);
+    rig.chain->setBlendTarget(0.0f); ///< pure wet, so the convolved reading is a live signal
+
+    const Stream a = harness::noiseStream(kChannels, total, 7u, 0.30f);
+    const Stream b = harness::noiseStream(kChannels, total, 11u, 0.12f);
+    Stream out(kChannels, std::vector<float>(static_cast<std::size_t>(total), 0.0f));
+
+    for (int index = 0; index < kHops; ++index)
+    {
+        std::vector<const float *> pa;
+        std::vector<const float *> pb;
+        std::vector<float *> po;
+        for (int channel = 0; channel < kChannels; ++channel)
+        {
+            pa.push_back(&a[static_cast<std::size_t>(channel)][static_cast<std::size_t>(index * shape.hop)]);
+            pb.push_back(&b[static_cast<std::size_t>(channel)][static_cast<std::size_t>(index * shape.hop)]);
+            po.push_back(&out[static_cast<std::size_t>(channel)][static_cast<std::size_t>(index * shape.hop)]);
+        }
+        rig.chain->processHop(pa.data(), pb.data(), po.data(), kChannels);
+    }
+
+    engine::TraceSnapshot shot{};
+    if (!report.line(rig.ring.newest(shot), "chain", "C1 premise: a hop published and the transport stopped",
+                     juce::String::formatted("%d writes, %d hops driven", rig.ring.writes(), kHops)))
+        return false;
+
+    report.line(rig.ring.writes() == static_cast<std::uint64_t>(kHops), "chain",
+                "C1 one snapshot per hop",
+                juce::String::formatted("%d for %d hops", rig.ring.writes(), kHops));
+    report.line(shot.hopIndex == static_cast<std::uint64_t>(kHops - 1), "chain",
+                "C1 the newest snapshot is the last hop",
+                juce::String::formatted("hop %llu of %d", shot.hopIndex, kHops));
+    report.line(shot.channels == static_cast<std::uint32_t>(kChannels), "chain",
+                "C1 the snapshot carries the processed count",
+                juce::String::formatted("%u channels", shot.channels));
+
+    for (int channel = 0; channel < kChannels; ++channel)
+    {
+        const engine::TraceReading &got = shot.reading[static_cast<std::size_t>(channel)];
+        const auto index = static_cast<std::size_t>(channel);
+        const bool equal = got.gainDb == rig.stage->gainDb(index)
+                           && got.envelopeA == rig.stage->envelopeA(index)
+                           && got.envelopeB == rig.stage->envelopeB(index)
+                           && got.envelopeConv == rig.stage->envelopeConv(index);
+        report.line(equal, "chain", "C1 published == the stage's own getters, exactly",
+                    juce::String::formatted(
+                        "ch%d gain %g/%g A %g/%g B %g/%g conv %g/%g (published/stage)", channel,
+                        got.gainDb, rig.stage->gainDb(index), got.envelopeA, rig.stage->envelopeA(index),
+                        got.envelopeB, rig.stage->envelopeB(index), got.envelopeConv,
+                        rig.stage->envelopeConv(index)));
+    }
+
+    report.line(rig.stage->envelopeA(0) != rig.stage->envelopeA(1), "chain",
+                "C1 the two channels' readings differ, so the equality above is not one value checked twice",
+                juce::String::formatted("A %g against %g, gain %g against %g", rig.stage->envelopeA(0),
+                                        rig.stage->envelopeA(1), rig.stage->gainDb(0), rig.stage->gainDb(1)));
+    return true;
+}
+
+/** C1 and C3 at the product's own capacity: the window the shell sizes at prepare, read back through the
+    seam. The authority for the *figures* is the law — the correction is parked at amount 0, whose gain is
+    exactly unity — so a published non-zero gain here is the shell's doing, not the stage's arithmetic. */
+bool theShellPublishesTheHopSequence(MatrixReport &report)
+{
+    ShellRig rig{harness::kStereoWithB, kTightest};
+    harness::setFloat(*rig.processor, EntangleAudioProcessor::normalisationAmountParameterId, 0.0f);
+
+    /* Longer than the window: 3 s of audio against a 2 s ring, so the publication has overflowed and what
+       comes back is the newest window rather than the whole run. */
+    const int total = static_cast<int>(3.0 * harness::kSampleRate);
+    const Stream a = harness::noiseStream(2, total, 21u, 0.25f);
+    const Stream b = harness::noiseStream(2, total, 22u, 0.20f);
+    harness::render(*rig.processor, a, &b, harness::constantBlocks(total, 256));
+
+    engine::TraceSnapshot latest{};
+    if (!report.line(rig.entangle().traceLatest(latest), "shell",
+                     "C1 premise: a render through the plugin published",
+                     juce::String::formatted("hop %llu, %u channels", latest.hopIndex, latest.channels)))
+        return false;
+
+    const std::size_t depth = rig.entangle().traceDepth();
+    const std::size_t hopsInWindow
+        = static_cast<std::size_t>(ui::kTraceWindowSeconds * kSampleRate / kTightest.hop);
+    report.line(depth >= hopsInWindow && (depth & (depth - 1)) == 0, "shell",
+                "C3 the window holds the seconds it claims and prepare sized it once",
+                juce::String::formatted("%zu slots for the %zu hops in %g s at H=%d — a power of two, never "
+                                        "a ring a busy transport grew",
+                                        depth, hopsInWindow, ui::kTraceWindowSeconds, kTightest.hop));
+
+    std::vector<engine::TraceSnapshot> window(depth);
+    const std::size_t count = rig.entangle().traceWindow({window.data(), window.size()});
+    report.line(count == depth, "shell", "C3 a full window comes back from a ring the render overflowed",
+                juce::String::formatted("%zu of %zu slots, %d hops rendered", count, depth,
+                                        total / kTightest.hop));
+
+    bool contiguous = count > 0;
+    for (std::size_t i = 1; i < count; ++i)
+        contiguous = contiguous && window[i].hopIndex == window[i - 1].hopIndex + 1;
+    report.line(contiguous && window[count - 1].hopIndex == latest.hopIndex, "shell",
+                "C1 the window is the hop sequence in order, ending on the newest",
+                juce::String::formatted("%llu … %llu", window[0].hopIndex, window[count - 1].hopIndex));
+
+    const std::size_t again = rig.entangle().traceWindow({window.data(), window.size()});
+    report.line(again == count && window[0].hopIndex == latest.hopIndex - static_cast<std::uint64_t>(count - 1),
+                "shell", "C3 reading the window consumes nothing — both panels share one history",
+                juce::String::formatted("%zu then %zu", count, again));
+
+    int nonZeroGain = 0;
+    for (const engine::TraceSnapshot &shot : window)
+        for (std::uint32_t channel = 0; channel < shot.channels; ++channel)
+            if (shot.reading[channel].gainDb != 0.0f)
+                ++nonZeroGain;
+    report.line(nonZeroGain == 0, "shell", "C1 amount 0 publishes exactly 0 dB, hop and channel",
+                juce::String::formatted("%d published gains are not 0", nonZeroGain));
+    return true;
+}
+
+/** The three components occupy the three cells `03` left empty — the claim its C7 leg had to give up. The
+    grid is the authority, as it is for §5.22's C1. */
+bool thePanelsSitInTheirBoxes(MatrixReport &report)
+{
+    ShellRig rig{harness::kStereoWithB, kDefault};
+    const ui::Grid grid = ui::Grid::reference();
+    const int body = ui::BarGeometry::bodyHeightAt(grid.k());
+    const int pitch = (grid.cellPx().h - body) / 2;
+    const ui::Rect box6 = grid.box(6);
+
+    struct Occupant
+    {
+        const char *cell;
+        const juce::Component *widget;
+        ui::Rect want;
+    };
+
+    const std::array<Occupant, 3> occupants{{
+        {"boxes 7-8", childNamed(*rig.editor, "responsePanel"), grid.span(2, 1, 2)},
+        {"boxes 11-12", childNamed(*rig.editor, "envelopePanel"), grid.span(2, 2, 2)},
+        {"box 6 row 3", childNamed(*rig.editor, "appliedCorrection"),
+         {box6.x, box6.y + 2 * pitch, box6.w, body}},
+    }};
+
+    for (const Occupant &held : occupants)
+    {
+        if (held.widget == nullptr)
+        {
+            report.line(false, held.cell, "C1 the component exists", "no child with that name");
+            continue;
+        }
+        expectRect(report, held.cell, "C1 its rect is the cell the grid gives it", held.widget->getBounds(),
+                   rectOf(held.want));
+    }
+    return true;
+}
+
+/** C5 — the axes are not invented. The response panel's range is the stage's own bound; the envelope panel's
+    scale is the gate parameter's own bound up to full scale; its rule is the live parameter, and moving the
+    dial moves the rule with the transport stopped — the arm that a rule read once at construction cannot
+    pass. */
+bool theAxesAreDerivedNotInvented(MatrixReport &report)
+{
+    ShellRig rig{harness::kStereoWithB, kTightest};
+    ui::ResponsePanel &response = rig.shell->responseDisplay();
+    ui::EnvelopePanel &envelope = rig.shell->envelopeDisplay();
+
+    report.line(response.axisRangeDb() == dsp::LevelNormalizer::gainRangeDb, "boxes 7-8",
+                "C5 the correction axis is the stage's gainRangeDb, not a number the panel chose",
+                juce::String::formatted("%g against the stage's %g", response.axisRangeDb(),
+                                        dsp::LevelNormalizer::gainRangeDb));
+
+    const double gateStart = parameterValue(*rig.processor, EntangleAudioProcessor::silenceFloorParameterId);
+    report.line(envelope.axisFloorDb() == EntangleAudioProcessor::silenceFloorMinDb, "boxes 11-12",
+                "C5 the level axis floor is the gate parameter's own bound",
+                juce::String::formatted("%g against the parameter's %g dB", envelope.axisFloorDb(),
+                                        EntangleAudioProcessor::silenceFloorMinDb));
+    report.line(envelope.ceilingDb() == 0.0, "boxes 11-12", "C5 the level axis ceiling is 0 dBFS",
+                juce::String::formatted("%g dBFS", envelope.ceilingDb()));
+    report.line(envelope.gateDb() == gateStart, "boxes 11-12", "C5 the rule is the live parameter",
+                juce::String::formatted("%g dB from the APVTS", gateStart));
+
+    const int ruleBefore = envelope.gateRuleY();
+    setFloat(*rig.processor, EntangleAudioProcessor::silenceFloorParameterId, -30.0f);
+    rig.shell->refreshTraces();
+
+    const int ruleAfter = envelope.gateRuleY();
+    const ui::EnvelopeAxis axis {EntangleAudioProcessor::silenceFloorMinDb, 0.0};
+    const ui::Rect field = uiRectOf(envelope.contentArea());
+    report.line(ruleAfter != ruleBefore, "boxes 11-12", "C5 moving the parameter moves the rule",
+                juce::String::formatted("y %d then %d, from %g dB to -30 dB", ruleBefore, ruleAfter,
+                                        gateStart));
+    report.line(ruleAfter == ui::envelopeYAt(-30.0, axis, field), "boxes 11-12",
+                "C5 and its y is the light half's answer for -30 dB on that axis",
+                juce::String::formatted("%d against %d", ruleAfter, ui::envelopeYAt(-30.0, axis, field)));
+    report.line(response.unityRuleY()
+                    == ui::correctionYAt(0.0, {dsp::LevelNormalizer::gainRangeDb},
+                                         uiRectOf(response.contentArea())),
+                "boxes 7-8", "C5 the unity rule is 0 dB on the stage's axis",
+                juce::String::formatted("y %d", response.unityRuleY()));
+    return true;
+}
+
+/** One render through one layout, then the tick that draws it: what the response panel's readout says, the
+    channel count it was given, and the widest per-hop gap between the two extremes it is plotting. */
+struct SpreadFixture
+{
+    ShellRig rig;
+    juce::String words;
+    std::uint32_t channels = 0;
+    double separationDb = 0.0;
+
+    SpreadFixture(const BusSetup &bus, unsigned seed, float quietChannelScale)
+        : rig(bus, kTightest)
+    {
+        const int total = static_cast<int>(1.5 * kSampleRate);
+        Stream a = noiseStream(2, total, seed, 0.40f);
+        /* The same material 20 dB quieter on the second channel. The stage decides per processed channel
+           (D-020), so this is the feed that has a spread for the panel to show. */
+        for (float &sample : a[1])
+            sample *= quietChannelScale;
+        const Stream b = noiseStream(2, total, seed + 1u, 0.20f);
+        render(*rig.processor, a, bus.withSidechain ? &b : nullptr, constantBlocks(total, 256));
+        rig.shell->refreshTraces();
+
+        words = rig.shell->responseDisplay().readoutWords();
+        std::vector<engine::TraceSnapshot> window(rig.entangle().traceDepth());
+        const std::size_t count = rig.entangle().traceWindow({window.data(), window.size()});
+        for (const engine::TraceSnapshot &shot : std::span(window.data(), count))
+        {
+            channels = shot.channels;
+            float least = shot.reading[0].gainDb;
+            float most = least;
+            for (std::uint32_t channel = 1; channel < shot.channels; ++channel)
+            {
+                least = std::min(least, shot.reading[channel].gainDb);
+                most = std::max(most, shot.reading[channel].gainDb);
+            }
+            separationDb = std::max(separationDb, static_cast<double>(most) - least);
+        }
+    }
+};
+
+/** C7 — one channel drawn as two coincident traces, two fed differently drawn apart.
+
+    The readout is the observable rather than a pixel count because it carries the same pair the traces do:
+    one figure when the extremes agree, `min / max` when they do not. A panel that took both traces from
+    channel 0 — §5's arm — says one figure under a feed that has a spread, and says nothing at all about the
+    gap. The gap itself is recorded for M9 row 1, never judged against a threshold this item has no business
+    choosing. */
+bool oneChannelIsTwoCoincidentTraces(MatrixReport &report)
+{
+    const SpreadFixture mono {kMonoNoB, 31u, 0.1f};
+    report.line(mono.channels == 1, "box 6", "C7 premise: one processed channel",
+                juce::String::formatted("%u channels", mono.channels));
+    report.line(mono.words.isNotEmpty() && mono.words.indexOf("/") < 0, "boxes 7-8",
+                "C7 one channel is one figure, not a pair that happens to be equal",
+                juce::String::formatted("\"%s\"", mono.words.toRawUTF8()));
+    report.line(mono.separationDb == 0.0, "boxes 7-8", "C7 and its two extremes coincide exactly",
+                juce::String::formatted("%.3f dB apart over the window", mono.separationDb));
+
+    const SpreadFixture pair {kStereoWithB, 31u, 0.1f};
+    report.line(pair.channels == 2, "box 6", "C7 premise: two processed channels",
+                juce::String::formatted("%u channels", pair.channels));
+    report.line(pair.words.indexOf("/") > 0, "boxes 7-8",
+                "C7 a feed with a spread is drawn and read as a pair",
+                juce::String::formatted("\"%s\" over %u channels", pair.words.toRawUTF8(), pair.channels));
+    report.line(pair.separationDb > 0.0, "boxes 7-8", "C7 the separation, recorded rather than judged",
+                juce::String::formatted("%.2f dB between the extremes, widest hop in the window",
+                                        pair.separationDb));
+    return true;
+}
+
+/** C8 — nothing published is said as `idle`, and the traces are not drawn toward a plausible zero. */
+bool aTransportThatPublishedNothingSaysIdle(MatrixReport &report)
+{
+    ShellRig rig{harness::kStereoWithB, kDefault};
+    engine::TraceSnapshot unused{};
+    report.line(!rig.entangle().traceLatest(unused), "shell", "C8 premise: prepared, and nothing published",
+                "traceLatest false");
+
+    rig.shell->refreshTraces();
+    report.line(rig.shell->responseDisplay().readoutWords() == "idle", "boxes 7-8",
+                "C8 the readout says idle",
+                juce::String::formatted("\"%s\"", rig.shell->responseDisplay().readoutWords().toRawUTF8()));
+    report.line(rig.shell->envelopeDisplay().readoutWords() == "idle", "boxes 11-12",
+                "C8 the readout says idle",
+                juce::String::formatted("\"%s\"", rig.shell->envelopeDisplay().readoutWords().toRawUTF8()));
+    report.line(rig.shell->traceDrainCount() == 0 && rig.shell->responseDisplay().rebuildCount() == 0
+                    && rig.shell->envelopeDisplay().rebuildCount() == 0,
+                "shell", "C8 and nothing was read, decimated or rebuilt to say it",
+                juce::String::formatted("%d drains, %d + %d rebuilds", rig.shell->traceDrainCount(),
+                                        rig.shell->responseDisplay().rebuildCount(),
+                                        rig.shell->envelopeDisplay().rebuildCount()));
+    return true;
+}
+
+/** C9 — the counted half of a steady tick: with no news, no drain and no rebuild. The confined-dirty-region
+    half is not decidable headless — a peerless repaint is dropped at the root, so a zero paint count is a
+    property of the rig. Paints are printed as context; the region is item 08's, seen in a host. */
+bool aSteadyTraceTickCostsNothing(MatrixReport &report)
+{
+    ShellRig rig{harness::kStereoWithB, kTightest};
+    const int total = static_cast<int>(1.0 * harness::kSampleRate);
+    const Stream a = harness::noiseStream(2, total, 41u, 0.30f);
+    const Stream b = harness::noiseStream(2, total, 42u, 0.30f);
+    harness::render(*rig.processor, a, &b, harness::constantBlocks(total, 256));
+
+    rig.shell->refreshTraces();
+    const int drains = rig.shell->traceDrainCount();
+    const int responseRebuilds = rig.shell->responseDisplay().rebuildCount();
+    const int envelopeRebuilds = rig.shell->envelopeDisplay().rebuildCount();
+    if (!report.line(drains == 1 && responseRebuilds > 0 && envelopeRebuilds > 0, "shell",
+                     "C9 premise: a tick with news drained and rebuilt",
+                     juce::String::formatted("%d drains, %d + %d rebuilds", drains, responseRebuilds,
+                                             envelopeRebuilds)))
+        return false;
+
+    for (int tick = 0; tick < 10; ++tick)
+        rig.shell->refreshTraces();
+
+    report.line(rig.shell->traceDrainCount() == drains
+                    && rig.shell->responseDisplay().rebuildCount() == responseRebuilds
+                    && rig.shell->envelopeDisplay().rebuildCount() == envelopeRebuilds,
+                "shell", "C9 ten ticks with no news drained nothing and rebuilt nothing",
+                juce::String::formatted("%d drains, %d + %d rebuilds, %d + %d paints (headless: no peer, "
+                                        "so paint never runs)",
+                                        rig.shell->traceDrainCount(),
+                                        rig.shell->responseDisplay().rebuildCount(),
+                                        rig.shell->envelopeDisplay().rebuildCount(),
+                                        rig.shell->responseDisplay().paintCount(),
+                                        rig.shell->envelopeDisplay().paintCount()));
+    return true;
+}
+
+/** Arm 11 — the sink is parked before the ring it points at is freed, and a later prepare republishes.
+    The dangling half of this is ASan's; what a console run can decide is that the seam is closed and that
+    closing it is not the same as losing the route. */
+bool releaseResourcesParksThePublication(MatrixReport &report)
+{
+    ShellRig rig{harness::kStereoWithB, kTightest};
+    const int total = static_cast<int>(0.5 * harness::kSampleRate);
+    const Stream a = harness::noiseStream(2, total, 51u, 0.30f);
+    const Stream b = harness::noiseStream(2, total, 52u, 0.30f);
+    harness::render(*rig.processor, a, &b, harness::constantBlocks(total, 256));
+
+    engine::TraceSnapshot shot{};
+    const bool published = rig.entangle().traceLatest(shot);
+
+    rig.processor->releaseResources();
+    engine::TraceSnapshot after{};
+    std::vector<engine::TraceSnapshot> window(8);
+    report.line(!rig.entangle().traceLatest(after) && rig.entangle().traceDepth() == 0
+                    && rig.entangle().traceWindow({window.data(), window.size()}) == 0,
+                "shell", "C11 releaseResources parks the sink and frees the ring",
+                juce::String::formatted("was publishing=%s, depth now %zu", published ? "yes" : "no",
+                                        rig.entangle().traceDepth()));
+
+    const bool reprepared = harness::configure(*rig.processor, harness::kStereoWithB, kTightest);
+    harness::render(*rig.processor, a, &b, harness::constantBlocks(total, 256));
+    report.line(reprepared && rig.entangle().traceLatest(after), "shell",
+                "C11 and the next prepare republishes into a ring of its own",
+                juce::String::formatted("hop %llu, depth %zu", after.hopIndex,
+                                        rig.entangle().traceDepth()));
+    return true;
+}
+
+/** §5.23 in full: what the level stage publishes about itself, who receives it, and what the two ink
+    panels make of it. One line per decision, tallied by the same `MatrixReport`.
+
+    The section opens editors, so it runs beside §5.22 — before §5.21, which still gets the last word and
+    the logger it swaps. */
+bool checkDisplayPanels()
+{
+    std::cout << "[5.23] the display panels (M10 item 04). The four readings the level stage already\n"
+                 "       publishes, followed across the thread boundary into the two ink panels: the\n"
+                 "       snapshot against the stage's own getters on a transport that has stopped, so the\n"
+                 "       producer cannot witness itself (F-017); the window the shell sizes at prepare and\n"
+                 "       the order it comes back in; the axes derived from the stage's bound and the gate\n"
+                 "       parameter, and the rule that moves when the dial does; one channel drawn as two\n"
+                 "       coincident traces and two fed differently as a separation recorded rather than\n"
+                 "       judged; a transport that published nothing saying `idle` and holding; a steady\n"
+                 "       tick costing no drain, no rebuild and no repaint; the three components in the\n"
+                 "       boxes `03` left empty; and a releaseResources that parks the publication before it\n"
+                 "       frees what it points at. Criteria 6 and 10 — the tints and the one rule — are the\n"
+                 "       probe's, read off pixels; criterion 2's hop is the Container and Engine binaries\n"
+                 "       under the counting hook; criteria 11 and 12 are the diff and the build.\n";
+
+    MatrixReport report;
+    bool passed = publishedFiguresAreTheStagesOwn(report);
+    passed = theShellPublishesTheHopSequence(report) && passed;
+    passed = thePanelsSitInTheirBoxes(report) && passed;
+    passed = theAxesAreDerivedNotInvented(report) && passed;
+    passed = oneChannelIsTwoCoincidentTraces(report) && passed;
+    passed = aTransportThatPublishedNothingSaysIdle(report) && passed;
+    passed = aSteadyTraceTickCostsNothing(report) && passed;
+    passed = releaseResourcesParksThePublication(report) && passed;
+
+    std::cout << "       " << report.decided << " lines decided, " << report.failed << " FAIL\n";
+    return passed && report.failed == 0;
+}
+
 }
 
 int main()
@@ -6076,6 +6533,7 @@ int main()
        replaces the logger nor assumes §5.21's premises, and §5.21 still gets the run it had before — the last
        word, after everything that swaps a Logger. */
     passed = checkShellSheet() && passed;
+    passed = checkDisplayPanels() && passed;
 
     /* §5.21 runs last on purpose: it replaces the logger installed above with its own counting one, and it is
        the only section whose legs assume the message-thread premise that `gui` establishes. Nothing after it

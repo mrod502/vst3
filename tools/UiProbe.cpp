@@ -15,14 +15,21 @@
 
 #include <Bar.hpp>
 #include <ChoiceBar.hpp>
+#include <EnvelopePanel.hpp>
+#include <Grid.hpp>
 #include <Panel.hpp>
+#include <PanelGeometry.hpp>
 #include <PieDial.hpp>
+#include <ResponsePanel.hpp>
 #include <Text.hpp>
 #include <Theme.hpp>
 
 #include <catch_amalgamated.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
+#include <limits>
 #include <set>
 #include <vector>
 
@@ -92,6 +99,108 @@ void render (const juce::Image& image, juce::Component& component)
 
     return count;
 }
+
+/** The mean y of one token inside an area: where a band of trace actually landed, which is what "in the
+    spec's order" means once it is on pixels. NaN when the token is absent, so a missing tint fails the
+    comparison instead of passing it as a zero at the top of the panel. */
+[[nodiscard]] double centroidY (const juce::Image& image, std::uint32_t token, juce::Rectangle<int> area)
+{
+    double sum{};
+    int count{};
+
+    for (int y = area.getY(); y < area.getBottom(); ++y)
+        for (int x = area.getX(); x < area.getRight(); ++x)
+            if (argbOf (image, x, y) == token)
+            {
+                sum += y;
+                ++count;
+            }
+
+    return count > 0 ? sum / static_cast<double> (count) : std::numeric_limits<double>::quiet_NaN();
+}
+
+/** Every row of the area that is one token from edge to edge — the instrument for "the single rule is the
+    only line drawn", which is a claim about a run of pixels, not about a colour count. */
+[[nodiscard]] std::vector<int> fullWidthRows (const juce::Image& image, std::uint32_t token,
+                                              juce::Rectangle<int> area)
+{
+    std::vector<int> rows;
+
+    for (int y = area.getY(); y < area.getBottom(); ++y)
+        if (countOf (image, token, { area.getX(), y, area.getWidth(), 1 }) == area.getWidth())
+            rows.push_back (y);
+
+    return rows;
+}
+
+/** The rectangles a component's own words occupy, padded one pixel for the glyph edge, in the canvas's
+    coordinates. A word's antialiasing is a designed blend of the word's tint with the field behind it, so a
+    palette claim about a panel has to leave these out — the same reason criterion 7's canvas carries no words.
+    Rectangles, not rows: a trace passes behind a label's row and is still the field's own business. */
+[[nodiscard]] std::vector<juce::Rectangle<int>> wordRectsOf (const juce::Component& owner,
+                                                             juce::Point<int> origin)
+{
+    std::vector<juce::Rectangle<int>> rects;
+
+    for (const juce::Component* child : owner.getChildren())
+        rects.push_back (child->getBounds().translated (origin.getX(), origin.getY()).expanded (1, 1));
+
+    return rects;
+}
+
+/** Pixels inside an area that are none of the palette's five, with the word rects skipped, and the tokens that
+    were found. This is criterion 10's "no stroke, gradient or alpha" and criterion 6's "no fourth colour" in
+    one pass: both are claims that a value exists which the palette has no name for. */
+[[nodiscard]] int countOffPalette (const juce::Image& image, juce::Rectangle<int> area,
+                                   const std::vector<juce::Rectangle<int>>& wordRects,
+                                   std::set<std::uint32_t>& tokensFound)
+{
+    static constexpr std::uint32_t kTokens[] = { ui::kGround, ui::kFill, ui::kInk, ui::kTrack, ui::kTrace };
+    int offenders{};
+
+    for (int y = area.getY(); y < area.getBottom(); ++y)
+        for (int x = area.getX(); x < area.getRight(); ++x)
+        {
+            const bool underAWord
+                = std::any_of (wordRects.begin(), wordRects.end(),
+                               [x, y] (const juce::Rectangle<int>& word) { return word.contains (x, y); });
+            if (underAWord)
+                continue;
+
+            const std::uint32_t value = argbOf (image, x, y);
+
+            if (std::find (std::begin (kTokens), std::end (kTokens), value) == std::end (kTokens))
+                ++offenders;
+            else
+                tokensFound.insert (value);
+        }
+
+    return offenders;
+}
+
+/** One deterministic window for both display panels: three envelopes at −80, −60 and −40 dBFS and a
+    correction pair at −12/+6 dB, flat across the panel so a measured band sits exactly where the light half
+    plots the value it names, at the real box size, with the gate clear of all three. */
+struct InkFeed
+{
+    static constexpr std::size_t count = 200;
+    static constexpr double secondsPerReading = 0.01;
+
+    InkFeed()
+    {
+        mainA.fill (0.0001f);
+        sideB.fill (0.001f);
+        conv.fill (0.01f);
+        minimum.fill (-12.0f);
+        maximum.fill (6.0f);
+    }
+
+    std::array<float, count> mainA;
+    std::array<float, count> sideB;
+    std::array<float, count> conv;
+    std::array<float, count> minimum;
+    std::array<float, count> maximum;
+};
 
 /** Is the pixel a blend of the two tokens — the same question betweenTokens asks of the pair, in the general
     form the criterion-7 leg needs for antialiased words. */
@@ -842,6 +951,161 @@ TEST_CASE ("ui: probe: the two panel modes and the word that survives them")
         CHECK (isToken (image, sheetBounds.getX() + 2, sheetBounds.getY() + 2, ui::kInk));
         CHECK (title.getWidth() > 0);
         CHECK (groundWords > 0);
+    }
+}
+
+/* `04` criterion 6: which tint carries which signal. A colour *count* cannot answer this — three tints in the
+   wrong order pass a palette scan — so the leg asks where each band actually sits, fed a flat window whose
+   three values are 20 dB apart and whose gate sits clear of all three.
+
+   The panels are at the box size the grid gives them, because the column count, the trace thickness and the
+   axis all come from the rect; their position is a margin rather than the sheet's, because the probe canvas
+   is smaller than the sheet and no position changes which tint carries which bus. */
+TEST_CASE ("ui: probe: the display panels carry their traces in the spec's tint order")
+{
+    Kit kit;
+    const InkFeed feed;
+    const ui::Rect cell = ui::Grid::reference().span (2, 2, 2);
+    const auto bounds = juce::Rectangle<int> { 8, 8, cell.w, cell.h };
+
+    SECTION ("boxes 11-12: A is track, B is fill, the convolved stream is trace")
+    {
+        ui::EnvelopePanel envelope;
+        envelope.setBounds (bounds);
+        envelope.setAxisDbRange (-90.0, 0.0);
+        envelope.setGateDb (-30.0);
+        envelope.setChannelCount (2);
+        envelope.setEnvelopes (feed.mainA.data(), feed.sideB.data(), feed.conv.data(), InkFeed::count,
+                               InkFeed::secondsPerReading, true);
+
+        juce::Image image = sheet();
+        render (image, envelope);
+
+        const auto field = envelope.contentArea().translated (bounds.getX(), bounds.getY());
+        const double mainA = centroidY (image, ui::kTrack, field);
+        const double sideB = centroidY (image, ui::kFill, field);
+        const double convolved = centroidY (image, ui::kTrace, field);
+        const int thickness = ui::traceThicknessAt (kWindowScale);
+
+        /* Lower on the panel is quieter, and the feed is −80, −60 and −40 dBFS in the spec's order. Swapping
+           two tints, or publishing one envelope into another's field, moves these two comparisons. */
+        INFO ("band centroids — A " << mainA << ", B " << sideB << ", conv " << convolved);
+        CHECK (mainA > sideB + thickness);
+        CHECK (sideB > convolved + thickness);
+
+        /* One ribbon each, of the light half's thickness. Ink-on-ink traces (arm 10) leave no pixels here at
+           all, and a stroke would leave two rows of them. */
+        CHECK (boundsOf (image, ui::kTrack).getHeight() == thickness);
+        CHECK (boundsOf (image, ui::kFill).getHeight() == thickness);
+        CHECK (boundsOf (image, ui::kTrace).getHeight() == thickness);
+    }
+
+    SECTION ("boxes 7-8: min on track and max on fill, straddling the unity rule — and no third tint")
+    {
+        ui::ResponsePanel response;
+        response.setBounds (bounds);
+        response.setCorrectionRange (36.0);
+        response.setCorrections (feed.minimum.data(), feed.maximum.data(), InkFeed::count,
+                                 InkFeed::secondsPerReading, true);
+
+        juce::Image image = sheet();
+        render (image, response);
+
+        const auto field = response.contentArea().translated (bounds.getX(), bounds.getY());
+        const double low = centroidY (image, ui::kTrack, field);
+        const double high = centroidY (image, ui::kFill, field);
+        const double rule = static_cast<double> (response.unityRuleY() + bounds.getY());
+
+        INFO ("min band " << low << ", max band " << high << ", unity rule row " << rule);
+        CHECK (low > rule);
+        CHECK (high < rule);
+        /* Two traces, two tints: the third tint belongs to the envelope panel and has no business here. */
+        CHECK (countOf (image, ui::kTrace, field) == 0);
+    }
+}
+
+/* `04` criterion 10: inside an ink field the tints are the ink, nothing is stroked, graduated or laid on with
+   alpha, and the panel's one rule is the only line drawn. Word rows are excluded from the palette pass —
+   glyph antialiasing is a designed blend, and the file's own rule is that a palette leg runs where it will
+   not fail on one. */
+TEST_CASE ("ui: probe: the ink field carries one rule and nothing the palette has no name for")
+{
+    Kit kit;
+    const InkFeed feed;
+    const ui::Rect cell = ui::Grid::reference().span (2, 2, 2);
+    const auto bounds = juce::Rectangle<int> { 8, 8, cell.w, cell.h };
+
+    ui::EnvelopePanel envelope;
+    envelope.setBounds (bounds);
+    envelope.setAxisDbRange (-90.0, 0.0);
+    envelope.setGateDb (-30.0);
+    envelope.setChannelCount (2);
+    envelope.setEnvelopes (feed.mainA.data(), feed.sideB.data(), feed.conv.data(), InkFeed::count,
+                           InkFeed::secondsPerReading, true);
+
+    juce::Image image = sheet();
+    render (image, envelope);
+
+    const auto field = envelope.contentArea().translated (bounds.getX(), bounds.getY());
+    std::set<std::uint32_t> tokens;
+    const int offPalette
+        = countOffPalette (image, field, wordRectsOf (envelope, bounds.getPosition()), tokens);
+
+    SECTION ("every pixel between the words is a flat token")
+    {
+        INFO ("pixels inside the field that are none of the five: " << offPalette);
+        CHECK (offPalette == 0);
+    }
+
+    SECTION ("and the tokens it does hold are ink, the three trace tints and the rule")
+    {
+        const std::set<std::uint32_t> expected { ui::kGround, ui::kFill, ui::kInk, ui::kTrack, ui::kTrace };
+        CHECK (tokens == expected);
+    }
+
+    SECTION ("the gate rule is the only line, at the row the light half gives for −30 dB")
+    {
+        const std::vector<int> rows = fullWidthRows (image, ui::kGround, field);
+        const int measured = rows.empty() ? -1 : rows.front();
+
+        INFO ("full-width rule rows: " << rows.size() << ", first at " << measured << ", predicted "
+                                       << envelope.gateRuleY() + bounds.getY());
+        REQUIRE (rows.size() == 1);
+        CHECK (rows.front() == envelope.gateRuleY() + bounds.getY());
+    }
+
+    SECTION ("the field is not outlined: a pixel outside each edge is the sheet")
+    {
+        CHECK (isToken (image, bounds.getX() - 1, bounds.getY() - 1, ui::kGround));
+        CHECK (isToken (image, bounds.getRight(), bounds.getY() - 1, ui::kGround));
+        CHECK (isToken (image, bounds.getX() - 1, bounds.getBottom(), ui::kGround));
+        CHECK (isToken (image, bounds.getRight(), bounds.getBottom(), ui::kGround));
+    }
+
+    SECTION ("the response panel holds its one unity rule and no fourth tint either")
+    {
+        ui::ResponsePanel response;
+        response.setBounds (bounds);
+        response.setCorrectionRange (36.0);
+        response.setCorrections (feed.minimum.data(), feed.maximum.data(), InkFeed::count,
+                                 InkFeed::secondsPerReading, true);
+
+        juce::Image pair = sheet();
+        render (pair, response);
+
+        const auto area = response.contentArea().translated (bounds.getX(), bounds.getY());
+        std::set<std::uint32_t> found;
+        const int offenders
+            = countOffPalette (pair, area, wordRectsOf (response, bounds.getPosition()), found);
+        const std::vector<int> rows = fullWidthRows (pair, ui::kGround, area);
+        const int measured = rows.empty() ? -1 : rows.front();
+
+        INFO ("off-palette: " << offenders << ", rule rows: " << rows.size() << " first at " << measured
+                              << ", predicted " << (response.unityRuleY() + bounds.getY()));
+        CHECK (offenders == 0);
+        REQUIRE (rows.size() == 1);
+        CHECK (rows.front() == response.unityRuleY() + bounds.getY());
+        CHECK (found.count (ui::kTrace) == 0);
     }
 }
 

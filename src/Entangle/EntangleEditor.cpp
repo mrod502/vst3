@@ -1,11 +1,13 @@
 #include "EntangleEditor.h"
 
 #include <BarGeometry.hpp>
+#include <LevelNormalizer.hpp>
 #include <Palette.hpp>
 #include <TextGeometry.hpp>
 
 #include <array>
 #include <cmath>
+#include <algorithm>
 #include <initializer_list>
 #include <utility>
 
@@ -103,11 +105,28 @@ void placeBlendDial (ui::Text& caption, ui::PieDial& dial, const ui::Rect& box, 
     dial.setBounds (box.x + sheet.labelColumn, box.y + (box.h - side) / 2, side, side);
 }
 
-/** The level stage's two labelled bars. The third row is the pitch's, not a widget's. */
-void placeLevelStage (ui::Bar& amount, ui::Bar& floor, const ui::Rect& box, const SheetGeometry& sheet)
+/** The level stage's three rows: the two dials it has and the one live figure worth a meter. The third row
+    closes the cell's bottom edge, which is why the meter — the only read-only widget in the group — sits
+    there rather than between the two controls it reports on. */
+void placeLevelStage (ui::Bar& amount, ui::Bar& floor, ui::Bar& meter, const ui::Rect& box,
+                      const SheetGeometry& sheet)
 {
     amount.setBounds (box.x, box.y, box.w, sheet.barHeight);
     floor.setBounds (box.x, box.y + sheet.rowPitch, box.w, sheet.barHeight);
+    meter.setBounds (box.x, box.y + 2 * sheet.rowPitch, box.w, sheet.barHeight);
+}
+
+/** The two display panels, each a two-column span: boxes 7–8 the applied correction, boxes 11–12 the three
+    envelopes. A span is the grid's own object, so the panel's edges are its first and last box's edges and
+    the gutter between them is inside the ink rather than a ground stripe through it. */
+void placeDisplayPanels (ui::ResponsePanel& response, ui::EnvelopePanel& envelopes,
+                         const ui::Grid& grid)
+{
+    const ui::Rect correction = grid.span (2, 1, 2);
+    const ui::Rect levels = grid.span (2, 2, 2);
+
+    response.setBounds (correction.x, correction.y, correction.w, correction.h);
+    envelopes.setBounds (levels.x, levels.y, levels.w, levels.h);
 }
 
 /** The coupled pair adjacent under its group caption, the lower choice closing the cell's bottom edge. */
@@ -154,7 +173,8 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
       silenceFloor { EntangleAudioProcessor::silenceFloorParameterId },
       blend { ui::PieMode::datumAtZero, EntangleAudioProcessor::blendParameterId },
       hopSelector { EntangleAudioProcessor::hopParameterId },
-      grainSelector { EntangleAudioProcessor::grainLengthParameterId }
+      grainSelector { EntangleAudioProcessor::grainLengthParameterId },
+      appliedCorrection { "appliedCorrection" }
 {
     /* Before anything is added: a component added first inherits the default look and feel through its
        parent, and the first paint of a widget wearing somebody else's skin is the failure §0 G's ordering
@@ -164,6 +184,13 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
     outputGain.setLabelWords ("Out");
     normalisationAmount.setLabelWords ("Amt");
     silenceFloor.setLabelWords ("Flr");
+
+    /* The meter is one-sided — |correction| against the stage's own bound, the sign in its words — because
+       the mockup draws no bipolar bar, so a bar that filled from the middle would be a design element
+       nobody drew (§2.3). Its range is the stage's, not a 0 dB to 100 % guess. */
+    appliedCorrection.setReadOnly (true);
+    appliedCorrection.setLabelWords ("Adj");
+    appliedCorrection.setRange (0.0, 1.0);
 
     for (int index = 0; index < static_cast<int> (EntangleAudioProcessor::hopValues.size()); ++index)
         hopSelector.addChoice (juce::String (EntangleAudioProcessor::hopValues[static_cast<std::size_t> (index)]),
@@ -182,7 +209,7 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
     bypassToggle.setButtonText ("Bypass");
     bypassToggle.setClickingTogglesState (true);
 
-    const std::array<juce::Component*, 17> children { &wordmark,     &statusLine,
+    const std::array<juce::Component*, 20> children { &wordmark,     &statusLine,
                                                      &layoutReadout, &grainReadout,
                                                      &blendReadout,  &volumeCaption,
                                                      &windowCaption, &eqCaption,
@@ -190,7 +217,8 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
                                                      &outputGain,    &normalisationAmount,
                                                      &silenceFloor,  &blend,
                                                      &hopSelector,   &grainSelector,
-                                                     &bypassToggle };
+                                                     &bypassToggle,  &appliedCorrection,
+                                                     &responsePanel, &envelopePanel };
     for (juce::Component* child : children)
         addAndMakeVisible (child);
 
@@ -238,6 +266,15 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
     // Either dial moves the 2x-hop floor, so both refresh the engine truths.
     hopSelector.onChange = [this] { refreshEngineTruths(); };
     grainSelector.onChange = [this] { refreshEngineTruths(); };
+
+    /* Both panels' scales come from the product, never from a figure written beside the panel: the response
+       panel's ± bound is the level stage's own clamp, and the envelope panel's axis is the gate parameter's
+       own bound while its rule follows the parameter itself. Below the attachments because until a widget
+       carries its parameter's value it carries its own default, and a rule taken from that is a lie about
+       the gate. The tick re-applies the rule every 100 ms after this. */
+    responsePanel.setCorrectionRange (dsp::LevelNormalizer::gainRangeDb);
+    envelopePanel.setAxisDbRange (static_cast<double> (EntangleAudioProcessor::silenceFloorMinDb), 0.0);
+    envelopePanel.setGateDb (static_cast<double> (silenceFloor.getValue()));
 
     refreshEngineTruths();
 
@@ -361,6 +398,102 @@ bool EntangleAudioProcessorEditor::updateInertStates()
 void EntangleAudioProcessorEditor::timerCallback()
 {
     refreshEngineTruths();
+    refreshTraces();
+}
+
+void EntangleAudioProcessorEditor::refreshTraces()
+{
+    engine::TraceSnapshot latest {};
+
+    /* The gate rule is the live parameter, not a function of new data: dragging `Flr` moves the rule with the
+       transport stopped, because a rule that only moves when the audio does is a photograph of the last hop.
+       It is set above the news test for that reason, and its setter no-ops on an unchanged value, so a tick
+       that changes nothing still costs nothing. */
+    envelopePanel.setGateDb (static_cast<double> (silenceFloor.getValue ()));
+
+    /* Two ways a tick carries no news: nothing has published since the last prepare, and the newest hop is
+       the one already drawn. Both take the same path — hand the panels "nothing advancing", which leaves the
+       traces where they stopped and the readouts saying `idle` — and neither reads the window, decimates a
+       column or repaints, which is criterion 9 and the reason the read below is not first. */
+    if (!processorRef.traceLatest (latest)
+        || (shownTraceHop.has_value() && latest.hopIndex == *shownTraceHop))
+    {
+        responsePanel.setCorrections (nullptr, nullptr, 0, 0.0, false);
+        envelopePanel.setEnvelopes (nullptr, nullptr, nullptr, 0, 0.0, false);
+        return;
+    }
+
+    ++traceDrains;
+    shownTraceHop = latest.hopIndex;
+
+    /* One read of the whole window per news-carrying tick, into scratch that was sized once. The ring is the
+       history: the panels are redrawn from it rather than accumulating a trace of their own. */
+    traceWindow.resize (processorRef.traceDepth());
+    const std::size_t count = processorRef.traceWindow (
+        {traceWindow.data(), static_cast<std::size_t> (traceWindow.size())});
+
+    correctionMinimum.resize (count);
+    correctionMaximum.resize (count);
+    envelopeMain.resize (count);
+    envelopeSide.resize (count);
+    envelopeConv.resize (count);
+
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const engine::TraceSnapshot& shot = traceWindow[i];
+        const auto channels = std::min (static_cast<std::size_t> (shot.channels),
+                                        static_cast<std::size_t> (engine::kMaxChannels));
+
+        /* The two extremes of the hop's per-channel corrections: with one channel the pair coincides, which
+           is what one channel looks like, and with eight the gap between them is the figure M9 row 1 is
+           still asking about. */
+        std::array<float, static_cast<std::size_t> (engine::kMaxChannels)> gains {};
+        for (std::size_t channel = 0; channel < channels; ++channel)
+            gains[channel] = shot.reading[channel].gainDb;
+
+        const ui::Spread spread = ui::spreadOf (gains.data(), channels);
+        correctionMinimum[i] = spread.minimum;
+        correctionMaximum[i] = spread.maximum;
+
+        envelopeMain[i] = shot.reading[0].envelopeA;
+        envelopeSide[i] = shot.reading[0].envelopeB;
+        envelopeConv[i] = shot.reading[0].envelopeConv;
+    }
+
+    const double secondsPerHop = processorRef.traceSecondsPerHop ();
+    const auto drawnChannels = std::clamp (latest.channels, 1U,
+                                           static_cast<std::uint32_t> (engine::kMaxChannels));
+
+    /* The gate rule was already applied above, on every tick; the channel count is only known from a
+       publication, so it travels with the traces it names. */
+    envelopePanel.setChannelCount (static_cast<int> (drawnChannels));
+
+    responsePanel.setCorrections (correctionMinimum.data (), correctionMaximum.data (), count,
+                                  secondsPerHop, true);
+    envelopePanel.setEnvelopes (envelopeMain.data (), envelopeSide.data (), envelopeConv.data (), count,
+                                secondsPerHop, true);
+
+    updateMeter (latest);
+}
+
+void EntangleAudioProcessorEditor::updateMeter (const engine::TraceSnapshot& latest)
+{
+    const float gain = latest.channels > 0 ? latest.reading[0].gainDb : 0.0f;
+    const double fraction = std::min (1.0, std::abs (static_cast<double> (gain))
+                                              / dsp::LevelNormalizer::gainRangeDb);
+
+    if (appliedCorrection.getValue() != fraction)
+        appliedCorrection.setValue (fraction, juce::dontSendNotification);
+
+    /* The sign lives in the words because the bar itself is one-sided; a fill that only ever grows would
+       report a −24 dB cut and a +24 dB boost identically, which is a meter that lies. */
+    const auto words = juce::String (gain < 0.0f ? "-" : "+") + juce::String (std::abs (gain), 1)
+                       + " dB";
+    if (words != shownMeterText)
+    {
+        shownMeterText = words;
+        appliedCorrection.setValueWords (words);
+    }
 }
 
 void EntangleAudioProcessorEditor::resized()
@@ -387,7 +520,8 @@ void EntangleAudioProcessorEditor::resized()
     placeTruthColumn (statusLine, layoutReadout, grainReadout, blendReadout, volumeCaption, eqCaption,
                       grid.box (2), sheet);
     placeBlendDial (vibesCaption, blend, grid.box (4), sheet);
-    placeLevelStage (normalisationAmount, silenceFloor, grid.box (6), sheet);
+    placeLevelStage (normalisationAmount, silenceFloor, appliedCorrection, grid.box (6), sheet);
     placeWindowSize (windowCaption, grainSelector, hopSelector, grid.box (9), sheet);
     placeEdgeCaption (waveformCaption, grid.box (10), sheet);
+    placeDisplayPanels (responsePanel, envelopePanel, grid);
 }

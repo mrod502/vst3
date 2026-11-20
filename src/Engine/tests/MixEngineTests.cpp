@@ -5,6 +5,8 @@
 #include <LevelNormalizer.hpp>
 #include <MixEngine.hpp>
 #include <SoftClipper.hpp>
+#include <TraceRing.hpp>
+#include <TraceSink.hpp>
 
 #include <catch_amalgamated.hpp>
 
@@ -1489,6 +1491,83 @@ TEST_CASE("the level stage moves neither delay figure, allocates nothing, and ca
                      << " against the inner engine's 96 and " << 8 * kHop);
     CHECK(allocations == 0);
     CHECK(observed->hopCalls == 64);
+}
+
+TEST_CASE("the trace sink publishes one snapshot per hop and allocates nothing")
+{
+    /* M10 item 04 criterion 2's half at the seam: a sink installed beside the stage must not put an
+       allocation on the hop — the ring is built in `prepare` and written in place — and a parked sink must
+       stop writing at once. The published figures against the stage's own getters is OfflineRender §5.23's
+       leg, decided on a quiesced transport (F-017). */
+    constexpr int channels = 2;
+    auto stub = std::make_unique<StubEngine>();
+    StubEngine* observed = stub.get();
+    engine::MixEngine mix(std::move(stub), std::make_unique<dsp::DcBlocker>(),
+                          std::make_unique<dsp::SoftClipper>());
+    auto stage = std::make_unique<dsp::LevelNormalizer>();
+    dsp::LevelNormalizer* observedStage = stage.get();
+    mix.installLevelNormalizer(std::move(stage));
+    mix.prepare(makeConfig(channels, kHop));
+
+    container::TraceRing<engine::TraceSnapshot> ring(16);
+    mix.installTraceSink(engine::TraceSink {&ring});
+
+    const Streams streamsA = makeInputs(channels, kHop, 0);
+    const Streams streamsB = makeInputs(channels, kHop, 5000);
+    Streams out = zerosLike(streamsA);
+    const Pointers p = pointersFor(streamsA, streamsB, out);
+
+    long allocations = -1;
+    {
+        AllocationWatch watch;
+        for (int call = 0; call < 64; ++call)
+        {
+            mix.setNormalisationAmountTarget(static_cast<float>(call % 5) / 4.0f);
+            mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+        }
+        allocations = allocationCount;
+    }
+
+    CHECK(allocations == 0);
+    CHECK(ring.writes() == 64);
+    CHECK(observed->hopCalls == 64);
+
+    engine::TraceSnapshot newest {};
+    REQUIRE(ring.newest(newest));
+    CHECK(newest.hopIndex == 63); ///< one per hop, numbered from the prepare
+    CHECK(newest.channels == static_cast<std::uint32_t>(channels));
+    CHECK(newest.reading[0].gainDb == observedStage->gainDb(0));
+    CHECK(newest.reading[1].envelopeConv == observedStage->envelopeConv(1));
+
+    /* A parked sink stops the publication at the next hop rather than writing into a ring the shell has
+       already freed, which is what `releaseResources` relies on. */
+    mix.installTraceSink({});
+    const std::uint64_t parked = ring.writes();
+    mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
+    CHECK(ring.writes() == parked);
+}
+
+TEST_CASE("a chain with no level stage publishes nothing")
+{
+    /* The panels say `idle` because the ring stays empty, not because the editor decided the transport
+       looked stopped, so a chain with no stage writes no snapshot even with a sink in place. */
+    auto stub = std::make_unique<StubEngine>();
+    engine::MixEngine mix(std::move(stub));
+    mix.prepare(makeConfig(1, kHop));
+
+    container::TraceRing<engine::TraceSnapshot> ring(8);
+    mix.installTraceSink(engine::TraceSink {&ring});
+
+    const Streams a = makeInputs(1, kHop, 0);
+    const Streams b = makeInputs(1, kHop, 900);
+    Streams out = zerosLike(a);
+    const Pointers p = pointersFor(a, b, out);
+    for (int call = 0; call < 8; ++call)
+        mix.processHop(p.a.data(), p.b.data(), p.out.data(), 1);
+
+    CHECK(ring.writes() == 0);
+    engine::TraceSnapshot read {};
+    CHECK_FALSE(ring.newest(read));
 }
 
 namespace

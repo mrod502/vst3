@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Engine.hpp"
+#include "TraceSink.hpp"
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -128,6 +130,13 @@ public:
         installed is not applied at all, exactly as for the other two. */
     void installLevelNormalizer(std::unique_ptr<dsp::LevelNormalizer> stage) noexcept;
 
+    /** Publishes the level stage's per-hop readings into the ring `sink` borrows, at the end of every hop.
+
+        Injected, never reached through an accessor into the stage (D-027): an empty sink costs one null
+        test per hop and no chain has to know a display exists. Called with processing suspended, as for
+        `installLevelNormalizer` — the sink is read on the hop path and is not atomic. */
+    void installTraceSink(TraceSink sink) noexcept;
+
     /** Forwarded to the level stage, which reads it at the next hop boundary. No-ops with no stage
         installed, so the shell and the harness can push the same targets at every variant. */
     void setNormalisationAmountTarget(float amount) noexcept;
@@ -186,6 +195,9 @@ private:
     void fillCoefficients() noexcept;
     void snapRamps() noexcept;
 
+    /** The hop's four readings per channel, and the position advance that goes with them. */
+    TraceSnapshot makeTraceSnapshot(int numChannels) noexcept;
+
     std::unique_ptr<Engine> inner;
     std::unique_ptr<dsp::DcBlocker> wetBlocker;
     std::unique_ptr<dsp::LevelNormalizer> levelNormalizer;
@@ -210,5 +222,11 @@ private:
     std::vector<float> coefA;
     std::vector<float> coefB;
     std::vector<float> coefWet;
+
+    /** The display's window on the level stage, and the position stamped on each publication. Written only
+        from the hop path, so neither needs to be atomic; the sink's ring pointer is set with processing
+        suspended. */
+    TraceSink trace;
+    std::uint64_t traceHop = 0;
 };
 }

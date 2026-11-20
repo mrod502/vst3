@@ -19,6 +19,8 @@
 #include "EngineChain.h"
 #include "JuceTransformFactory.h"
 
+#include <span>
+
 using namespace std;
 //==============================================================================
 class EntangleAudioProcessor final : public juce::AudioProcessor,
@@ -231,6 +233,28 @@ public:
         premise — while the editor reads it at idle on the message thread. */
     juce::String layoutReport() const;
 
+    //==============================================================================
+    /** The level stage's recent history, for the two display panels (D-027).
+
+        The ring is the window: it is sized at prepare for `ui::kTraceWindowSeconds` of hops, and the newest
+        reading sits at the end. Reading it copies by value and consumes nothing, so the two panels and any
+        future one see the same window without competing for it, and the hop path never waits for a reader —
+        a full ring laps its oldest reading rather than refusing the newest.
+
+        @return the readings copied, oldest first, `<= destination.size()`; 0 before a prepare built a ring. */
+    std::size_t traceWindow (std::span<engine::TraceSnapshot> destination) const;
+
+    /** The newest published reading, or false when the transport has published nothing since the last
+        prepare. By value, so the caller owns what it reads (§7: nothing borrowed from the hop path). */
+    bool traceLatest (engine::TraceSnapshot& destination) const;
+
+    /** The hop's duration in seconds at the configuration the rings were last built for, or 0 before that —
+        the figure the panels' time axis is taken from, so neither of them converts a hop on its own. */
+    double traceSecondsPerHop() const noexcept;
+
+    /** How many hops of history the ring holds, or 0 before a prepare built one. */
+    std::size_t traceDepth() const noexcept;
+
     juce::AudioProcessorValueTreeState apvts;
 
     vector<complex<float>> fftBuf;
@@ -268,6 +292,19 @@ private:
         mean prepares and declined arrivals rather than pokes. */
     void refreshLayoutReport (const engine::LayoutDecision&, const entangle::ChainConfig&,
                               double sampleRateToUse, int samplesPerBlock);
+
+    /** Builds the display's publication ring for one prepare and hands it to the mix stage, replacing any
+        previous one. Called from `configureRings` with processing suspended, and parked in
+        `releaseResources` before the ring is freed — the sink borrows it and must forget it first (D-027). */
+    void installTracePublication (double sampleRateToUse, int hop);
+
+    /** The window the two display panels read, owned here because the hop path writes it: the ring exists
+        only between a prepare that built it and the `releaseResources` that parks the sink and frees it.
+        `traceLock` serialises the message thread's read and the prepare path's swap — the audio path takes
+        neither lock, it holds a bare ring pointer and never resolves it. Declared above `engine` for the
+        same reason `transformFactory` is: the borrow must not outlive the borrower's target. */
+    mutable juce::CriticalSection traceLock;
+    std::unique_ptr<container::TraceRing<engine::TraceSnapshot>> traceRing;
 
     /** Declared above engine because GrainConvolutionEngine only borrows it and members are
         destroyed in reverse declaration order: this has to outlive the borrower. */

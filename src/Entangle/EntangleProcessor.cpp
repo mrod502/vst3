@@ -2,6 +2,7 @@
 #include "EntangleEditor.h"
 #include "Entangle.h"
 #include <LayoutGate.hpp>
+#include <PanelGeometry.hpp>
 #include <algorithm>
 #include <iostream>
 
@@ -280,9 +281,57 @@ void EntangleAudioProcessor::configureRings(double sampleRateToUse, int samplesP
 
     pushParameterTargets();
 
+    /* The display's window is rebuilt with every other ring here, and before the engine is prepared: the
+       sink holds a bare pointer to it, so the ring has to be the thing that exists first (D-027). */
+    installTracePublication (sampleRateToUse, chain.hop);
+
     scheduler.prepare(schedulerConfig);
     setLatencySamples(schedulerConfig.engine.latencySamples);
     refreshLayoutReport(layout, chain, sampleRateToUse, samplesPerBlock);
+}
+
+void EntangleAudioProcessor::installTracePublication (double sampleRateToUse, int hop)
+{
+    /* The window is the panels', read here because the shell is the one place both halves are visible
+       (AGENTS §8). +1 so a full window always fits rather than lapping itself by one hop at the exact
+       boundary; the ring rounds up to a power of two, and its capacity is the figure `traceDepth` reports. */
+    const auto hops = sampleRateToUse > 0.0 && hop > 0
+                          ? static_cast<std::size_t> (ui::kTraceWindowSeconds * sampleRateToUse
+                                                      / static_cast<double> (hop) + 1.0)
+                          : 1;
+
+    const juce::ScopedLock scoped (traceLock);
+
+    /* Park, rebuild, re-borrow: the sink is read on the hop path and is not atomic, so the swap is staged
+       through the null state rather than pointing at a ring that is half-replaced. */
+    engine->installTraceSink ({});
+    traceRing = std::make_unique<container::TraceRing<engine::TraceSnapshot>> (hops);
+    engine->installTraceSink (engine::TraceSink {traceRing.get()});
+}
+
+std::size_t EntangleAudioProcessor::traceWindow (std::span<engine::TraceSnapshot> destination) const
+{
+    const juce::ScopedLock scoped (traceLock);
+    return traceRing != nullptr ? traceRing->peekNewestInto (destination) : 0;
+}
+
+bool EntangleAudioProcessor::traceLatest (engine::TraceSnapshot& destination) const
+{
+    const juce::ScopedLock scoped (traceLock);
+    return traceRing != nullptr && traceRing->newest (destination);
+}
+
+double EntangleAudioProcessor::traceSecondsPerHop() const noexcept
+{
+    return engineConfig.sampleRate > 0.0 && engineConfig.hop > 0
+               ? static_cast<double> (engineConfig.hop) / engineConfig.sampleRate
+               : 0.0;
+}
+
+std::size_t EntangleAudioProcessor::traceDepth() const noexcept
+{
+    const juce::ScopedLock scoped (traceLock);
+    return traceRing != nullptr ? traceRing->capacity() : 0;
 }
 
 juce::String EntangleAudioProcessor::layoutReport() const
@@ -407,6 +456,15 @@ void EntangleAudioProcessor::releaseResources()
                             guard of D-022 B must not talk it out of doing the work. Freeing something here
                             behind a remembered key would be the one way to run a transport on state that is
                             gone — §5 arm 11, and the leg in OfflineRender §5.19 that reddens it. */
+
+    /* The same rule reaches the display's window: the mix stage borrows the ring, so it is parked before the
+       ring is freed. A hop that arrived after this point would find a null sink and publish nothing rather
+       than write into freed memory — the leg §5.23 runs under the sanitizer tree for arm 11. */
+    {
+        const juce::ScopedLock scoped (traceLock);
+        engine->installTraceSink ({});
+        traceRing.reset();
+    }
 }
 
 void EntangleAudioProcessor::reset()

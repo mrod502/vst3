@@ -7,6 +7,7 @@ program with no `AudioProcessor`.
 ```
 Engine.hpp / PassthroughEngine.hpp   the seam, and a bit-exact copy implementation
 MixEngine.hpp                        the host controls: blend, gain, bypass, the three stages
+TraceSink.hpp                        the per-hop reading a display may borrow, and its record type
 ChannelMap.hpp                       which source each output reads, per side
 LayoutGate.hpp                       whether a layout may exist at all
 ReconfigureKey.hpp                   what a prepared transport was built for
@@ -57,6 +58,26 @@ blend dial `p ∈ [-1, 1]`, `w_dry = sinf(t·π/2)`, `w_wet = cosf(t·π/2)`, `�
   The level targets (`setNormalisationAmountTarget`, `setSilenceFloorTarget`) are deliberately not
   ramped here — the applied gain is already continuous along the hop — and both no-op with no stage
   installed.
+
+## Trace publication
+
+`installTraceSink(TraceSink)` sits beside `installLevelNormalizer` and for the same reason: what a display
+reads is *installed from above*, never reached through an accessor into the stage. The sink is a non-owning
+borrow of a `container::TraceRing<TraceSnapshot>` the shell owns; an empty sink is the parked state and costs
+one null test per hop.
+
+- **One snapshot per published hop, for every processed channel** — `hopIndex`, the channel count, and
+  `{envelopeA, envelopeB, envelopeConv, gainDb}` per channel: the four figures the level stage already
+  publishes, copied by value into a fixed 144-byte record. The stage's own getters stay the hop thread's; the
+  ring is what crosses, and the reader never dereferences a live detector (D-027).
+- **Publication needs a stage as well as a sink** — the call is guarded on `levelNormalizer != nullptr` too, so
+  a chain with no level stage publishes nothing and the panels say `idle` rather than drawing a flat line that
+  reads as a held signal.
+- **A fresh record per hop, never a member edited in place**: channels the hop did not write hold the zero the
+  snapshot was constructed with, not a previous hop's leftover. `hopIndex` counts published hops and `prepare`
+  resets it, so a display can tell a re-prepare from a continuing stream.
+- Nothing on this path allocates, blocks or fails: the ring laps its oldest slot rather than refusing the new
+  one, and an absent sink is one branch.
 
 ## ChannelMap
 
@@ -181,6 +202,12 @@ its lifetime. The mix and level targets are plain members: `processBlock` writes
 thread, and message-thread writes happen with `suspendProcessing(true)` held, so no lock and no
 atomic is needed.
 
+The trace sink follows the same discipline and it is worth naming exactly how far that goes: the sink holds
+a raw pointer and is **not** atomic, so it is swapped only while processing is suspended, staged through the
+empty state (park → rebuild the ring → re-borrow). The hop path therefore sees either the old sink or the
+new one, never a ring half-replaced. The ring itself is SPSC: the hop thread is its only writer, the message
+thread its only reader.
+
 ## Build and test
 
 ```bash
@@ -193,14 +220,18 @@ cmake --build build/release --target Engine -j4
 ctest --test-dir build/release -R "channel map" --output-on-failure
 ctest --test-dir build/release -R "layout gate" --output-on-failure
 ctest --test-dir build/release -R "reconfigure" --output-on-failure
+ctest --test-dir build/release -R "publishes" --output-on-failure
 ```
 
 Five binaries because a test that counts allocations replaces global `operator new`, and a program may
 define that once. **Never filter by target name** — `ctest -R EngineTests` selects nothing and exits 0.
-Case names carry the prefix: `"channel map"`, `"layout gate"`, `"reconfigure"`, `"level stage runs after"`.
-The byte-level claims live in `ReconfigureTests`; what the guard does inside a real
+Case names carry the prefix: `"channel map"`, `"layout gate"`, `"reconfigure"`, `"level stage runs after"`,
+`"publishes"` (the two trace-sink legs, one of which counts allocations on the hop path).
+The byte-level claims live in `ReconfigureTests` and run on Linux only: the ledger that weighs them needs every
+allocation in the process to come through this shim, which Mach-O's two-level namespace does not give (F-027).
+There those three legs report Skipped and the counted legs still run. What the guard does inside a real
 `setBusesLayout` is `OfflineRender` §5.19, which needs an `AudioProcessor` and may not define the hook.
 
 ## Decisions
 
-D-004, D-010, D-011, D-017, D-018, D-021, D-022 — `docs/decisions.md`.
+D-004, D-010, D-011, D-017, D-018, D-021, D-022, D-027 — `docs/decisions.md`.

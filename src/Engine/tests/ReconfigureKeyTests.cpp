@@ -28,12 +28,20 @@
 
 namespace
 {
-/** Byte-exact live accounting. Every block carries its size and its raw base in the 16 bytes below the
-    payload, so `operator delete(void*)` — which is not given the size — can still retire it. The counter is
-    armed for the call-count legs; the byte total runs always, so a leg snapshots before and after. */
+/** Byte-exact live accounting where the ledger below runs; the call counter runs on every platform. A leg
+    snapshots either one before and after. */
 bool armAllocationCount = false;
 long allocationCount = 0;
 std::ptrdiff_t liveBytes = 0;
+
+/* The header below the payload is only sound where the executable's `operator new` interposes for every
+   caller: ELF does, Mach-O's two-level namespace lets libc++ allocate without one, and freeing such a block
+   here frees a wild pointer. There the shim is a plain pass-through and the byte legs SKIP. */
+#ifdef __linux__
+constexpr bool kLiveByteLedger = true;
+#else
+constexpr bool kLiveByteLedger = false;
+#endif
 
 constexpr std::size_t maxAlignment(std::size_t requested) noexcept
 {
@@ -42,31 +50,46 @@ constexpr std::size_t maxAlignment(std::size_t requested) noexcept
 
 void* allocateCounted(std::size_t size, std::size_t alignment)
 {
-    const std::size_t span = maxAlignment(alignment);
-    const std::size_t total = size + span;
-    void* base = span == alignof(std::max_align_t)
-                     ? std::malloc(total)
-                     : std::aligned_alloc(span, ((total + span - 1) / span) * span);
+    if constexpr (kLiveByteLedger)
+    {
+        const std::size_t span = maxAlignment(alignment);
+        const std::size_t total = size + span;
+        void* base = span == alignof(std::max_align_t)
+                         ? std::malloc(total)
+                         : std::aligned_alloc(span, ((total + span - 1) / span) * span);
+        if (base == nullptr)
+            throw std::bad_alloc();
+
+        char* payload = static_cast<char*>(base) + span;
+        *reinterpret_cast<std::size_t*>(payload - 8) = size;
+        *reinterpret_cast<void**>(payload - 16) = base;
+
+        liveBytes += static_cast<std::ptrdiff_t>(size);
+        if (armAllocationCount)
+            ++allocationCount;
+        return payload;
+    }
+
+    void* base = std::malloc(size != 0 ? size : 1);
     if (base == nullptr)
         throw std::bad_alloc();
-
-    char* payload = static_cast<char*>(base) + span;
-    *reinterpret_cast<std::size_t*>(payload - 8) = size;
-    *reinterpret_cast<void**>(payload - 16) = base;
-
-    liveBytes += static_cast<std::ptrdiff_t>(size);
     if (armAllocationCount)
         ++allocationCount;
-    return payload;
+    return base;
 }
 
 void releaseCounted(void* payload) noexcept
 {
     if (payload == nullptr)
         return;
-    char* at = static_cast<char*>(payload);
-    liveBytes -= static_cast<std::ptrdiff_t>(*reinterpret_cast<std::size_t*>(at - 8));
-    std::free(*reinterpret_cast<void**>(at - 16));
+    if constexpr (kLiveByteLedger)
+    {
+        char* at = static_cast<char*>(payload);
+        liveBytes -= static_cast<std::ptrdiff_t>(*reinterpret_cast<std::size_t*>(at - 8));
+        std::free(*reinterpret_cast<void**>(at - 16));
+        return;
+    }
+    std::free(payload);
 }
 }
 
@@ -77,7 +100,9 @@ void operator delete(void* payload, std::size_t) noexcept { releaseCounted(paylo
 void operator delete[](void* payload) noexcept { releaseCounted(payload); }
 void operator delete[](void* payload, std::size_t) noexcept { releaseCounted(payload); }
 
-#ifdef __cpp_aligned_new
+/* Over-aligned requests stay with libc++ where the plain shim cannot honour the alignment — its new/delete
+   pair is self-consistent, and ours cannot claim those blocks without a header. */
+#if defined(__cpp_aligned_new) && defined(__linux__)
 void* operator new(std::size_t size, std::align_val_t alignment)
 {
     return allocateCounted(size, static_cast<std::size_t>(alignment));
@@ -441,6 +466,8 @@ TEST_CASE("reconfigure: a refused triple clears the reconfigure key", "[reconfig
 
 TEST_CASE("reconfigure: prepare sizes by source in and processed out", "[reconfigure]")
 {
+    if constexpr (!kLiveByteLedger)
+        SKIP("the byte ledger needs every allocation to come through this shim, which Mach-O denies");
     /* C1: the figures of `04` §1.2 and §1.3, taken from allocated bytes rather than from the expression at
        `HopScheduler.cpp:53`. Every triple the shipped gate accepts at its two ends — mono with no sidechain,
        the widest layout that shipped before D-021, and both halves of the consolidated family — over the four
@@ -491,6 +518,8 @@ TEST_CASE("reconfigure: prepare sizes by source in and processed out", "[reconfi
 
 TEST_CASE("reconfigure: a narrower re-prepare releases the sidechain rings", "[reconfigure]")
 {
+    if constexpr (!kLiveByteLedger)
+        SKIP("the byte ledger needs every allocation to come through this shim, which Mach-O denies");
     /* C2: behaviour, not a limit. `inputA`/`inputB`/`output` are cleared and rebuilt, so a narrowing frees the
        rings it no longer needs — exactly the sidechain rings, measured against the ring capacity a prepare
        allocates at this hop — and the way back costs the same number of bytes. */
@@ -513,6 +542,8 @@ TEST_CASE("reconfigure: a narrower re-prepare releases the sidechain rings", "[r
 
 TEST_CASE("reconfigure: hop scratch keeps its capacity across a narrowing", "[reconfigure]")
 {
+    if constexpr (!kLiveByteLedger)
+        SKIP("the byte ledger needs every allocation to come through this shim, which Mach-O denies");
     /* C10: the other half of `04` §1.6, recorded rather than assumed away. The ring vectors are cleared and
        rebuilt, so their storage comes back; every hop scratch goes through `assign`, which does not shrink
        capacity, so the high-water of chB x hop floats stays allocated whatever comes next — and so does the

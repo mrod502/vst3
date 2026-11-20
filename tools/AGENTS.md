@@ -10,7 +10,7 @@ Harnesses, test programs and measurement instruments. Nothing here ships.
 | `OfflineRender` | console app, in CTest | renders through the plugin's shared code and prints a numbered section log — one CTest case, not a suite |
 | `ShellTests` | Catch2, in CTest | `"harness: "` cases — shell identity, block-plan invariance, the dry path delayed by `R`, generator reproducibility, the failure dump, the tripwire controls |
 | `CrossProductTests` | Catch2, in CTest | the accepted-layout × callback-plan matrix; the quick arm at H = 512 / `L` = 1024 and the long arm carrying the `"cross product long: "` prefix at the shipped H = 128 / `L` = 8192 |
-| `UiProbe` | Catch2, in CTest | `"ui: probe: "` — the kit's pixels, sampled from an offscreen `paintEntireComponent` |
+| `UiProbe` | Catch2, in CTest | `"ui: probe: "` — the kit's and the display panels' pixels, sampled from an offscreen `paintEntireComponent` |
 | `UiAllocTests` | Catch2, in CTest | `"ui: alloc: "` — allocations inside one paint, as equalities against the same drawing without the kit |
 | `CpuBaseline` | console app, **not** in CTest | per-callback cost figures |
 | `PrepareFootprint` | console app, **not** in CTest | live bytes per configuration, printed after a host/build-type line |
@@ -49,6 +49,10 @@ ctest --test-dir build/release -E "OfflineRender|cross product long" --output-on
 ```
 
 `OfflineRender`'s sections: §5.1–§5.18 the DSP and lifecycle anchors, §5.19 the re-prepare guard inside
-a real `setBusesLayout`, §5.20 the channel matrix, §5.21 the layout report, §5.22 the editor shell.
+a real `setBusesLayout`, §5.20 the channel matrix, §5.21 the layout report, §5.22 the editor shell,
+§5.23 the two display panels and the publication behind them — a snapshot against the level stage's own
+getters on a transport that has stopped, the window the shell sized at prepare, the derived axes, the
+spread figure recorded rather than judged, `idle`, the counted half of a quiet tick, and the three
+components in the cells `03` left empty.
 §5.21 swaps the installed `juce::Logger` for a counting one, so it runs last and `main()` filters the
 log to keep the other sections' output byte-identical between runs.

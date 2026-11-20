@@ -61,6 +61,15 @@ void MixEngine::prepare(const EngineConfig& configToUse)
     coefA.assign(hop, 0.0f);
     coefB.assign(hop, 0.0f);
     coefWet.assign(hop, 0.0f);
+
+    /* The publication's position restarts with the transport: the ring above the seam is rebuilt at the
+       same moment, so a continuing counter would be a gap nobody can tell from a wrap. */
+    traceHop = 0;
+}
+
+void MixEngine::installTraceSink(TraceSink sink) noexcept
+{
+    trace = sink;
 }
 
 void MixEngine::snapRamps() noexcept
@@ -200,5 +209,34 @@ void MixEngine::processHop(const float* const* a, const float* const* b, float* 
         for (int channel = 0; channel < numChannels; ++channel)
             outputClipper->processChannel(out[channel], hop);
     }
+
+    /* The publication goes last so the readings are the ones this hop was decided from and its position
+       matches the hop the host just got. A chain with no level stage has no readings and publishes
+       nothing: an absent trace is honest, a zeroed one is a flat line that looks like a signal. */
+    if (levelNormalizer != nullptr && !trace.empty())
+        trace.publish(makeTraceSnapshot(numChannels));
+}
+
+TraceSnapshot MixEngine::makeTraceSnapshot(int numChannels) noexcept
+{
+    const std::size_t count = static_cast<std::size_t>(
+        numChannels < kMaxChannels ? numChannels : kMaxChannels);
+
+    TraceSnapshot snapshot;
+    snapshot.hopIndex = traceHop;
+    snapshot.channels = static_cast<std::uint32_t>(count);
+
+    for (std::size_t channel = 0; channel < count; ++channel)
+    {
+        snapshot.reading[channel] = TraceReading {
+            levelNormalizer->envelopeA(channel),
+            levelNormalizer->envelopeB(channel),
+            levelNormalizer->envelopeConv(channel),
+            levelNormalizer->gainDb(channel),
+        };
+    }
+
+    ++traceHop;
+    return snapshot;
 }
 }

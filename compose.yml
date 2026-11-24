@@ -13,10 +13,10 @@ volumes:
     # chat state persist here. No host file outside this repo is written by the container.
     name: vst3-home
   build:
-    # Every container build tree: build/debug, build/release. A named volume lives in the
-    # VM's filesystem, so no container build is host-visible -- and `rm -rf build` on the
-    # host does not clear these; that is `docker compose exec vst3-dev rm -rf
-    # /workspace/build/<config>`.
+    # Every container build tree, mounted at /ct/build and named by BUILD_ROOT below. A named
+    # volume lives in the VM's filesystem, so no container build is host-visible and `rm -rf
+    # build` on the host clears only the host tree. Clearing a container tree is
+    # `docker compose exec vst3-dev rm -rf /ct/build/<config>`.
     name: vst3-build
   tmp:
     name: vst3-tmp
@@ -54,13 +54,15 @@ services:
     volumes:
       - .:/workspace
       # The Linux build trees are a volume, not the host directory: a CMakeCache.txt
-      # configured by the host's AppleClang cannot be reused by the container's
-      # gcc/clang, and sharing one directory clobbers whichever side reconfigures.
-      # The shield is path-exact, so every build tree must sit under build/ (build/debug,
-      # build/release). Anywhere else it reaches the host through the bind mount above,
-      # owned by the container's numeric uid -- and a tree containing a uid the host cannot
-      # map is one `rm -rf` failure on a directory it cannot unlink.
-      - build:/workspace/build
+      # configured by the host's AppleClang cannot be reused by the container's gcc/clang, and
+      # sharing one directory clobbers whichever side reconfigures.
+      # The mount sits outside /workspace deliberately. A mountpoint inside the export is
+      # created on the host by the guest and carries a `user:<name> deny delete` ACE, so host
+      # `rm -rf build` hits EACCES on a directory the host itself owns (F-028). BUILD_ROOT
+      # below aims the container's trees at this path, so `make install` needs no variant.
+      # A container build that reaches /workspace anyway is now merely host-visible at the
+      # container's numeric uid, no longer a host-undeletable directory.
+      - build:/ct/build
       - ${HOME}/.gitconfig:/home/dev/.gitconfig:ro
       - ${HOME}/.ssh:/home/dev/.ssh:ro
       - home:/home/dev
@@ -80,6 +82,10 @@ services:
       HOME: /home/dev
       CCACHE_DIR: /home/dev/.cache/ccache
       CMAKE_BUILD_PARALLEL_LEVEL: ${VST3_CPUS:-4}
+      # cmd/install, cmd/build and the Makefile resolve a tree as $BUILD_ROOT/<config>, so the
+      # container reaches the volume above with the same command the host uses. Unset on the
+      # host, where the default is the repo-relative build/.
+      BUILD_ROOT: /ct/build
     read_only: true
     security_opt:
       - no-new-privileges:true

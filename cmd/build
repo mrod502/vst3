@@ -6,4 +6,4 @@ buildParallelism() {
 }
 
 cd "$(dirname "$0")/.." || exit 1
-cmake --build "build/${1:-release}" -j $(buildParallelism)
+cmake --build "${BUILD_ROOT:-build}/${1:-release}" -j $(buildParallelism)

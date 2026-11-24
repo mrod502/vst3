@@ -11,7 +11,8 @@ connection pools, routers, migrations or domain-model serialisation.
 ## 1. Product
 
 Main input + optional sidechain send → grain cross-convolution of A and B (mode 1) → mix law against
-the dry bus → output.
+dry A → output. The sidechain shapes the convolution and the level target; it reaches the output at no
+dial position.
 
 ```mermaid
 graph LR
@@ -19,7 +20,7 @@ graph LR
   B[Sidechain B] --> G
   G --> DC[DcBlocker] --> LN[LevelNormalizer] --> MIX[Mix law: blend / bypass / gain]
   A --> MIX
-  B --> MIX
+  B --> LN
   MIX --> CL[SoftClipper] --> OUT[Output]
 ```
 
@@ -33,7 +34,8 @@ graph LR
 | `P` | partition size |
 | `N` | processed channel count, before consolidation |
 | `chA`, `chB` | main-input and sidechain channel counts; `chB == 0` when the sidechain bus is absent |
-| `p` | blend dial position in `[-1, 1]` |
+| `q` | the blend dial's position in `[0, 1]` — `q = 0` dry A, `q = 1` the convolution |
+| `p` | the law's position, `q − 1`, so the reachable `p` is in `[-1, 0]` and the dry bus is always A |
 | `R` | declared latency, `latencySamples()` — what the host compensates and the scheduler pre-fills |
 | `W` | the wet path's own delay, `wetDelaySamples()` |
 
@@ -120,9 +122,11 @@ cmake/                   # EntangleTestFramework.cmake — the pinned Catch2 wir
 src/                     # one directory per library, each with its own AGENTS.md
 tools/                   # harness/, OfflineRender, CpuBaseline, PrepareFootprint, UiProbe, UiAllocTests
 juce/                    # submodule: juce-framework/juce @ >= 9.0.4
-public/                  # untracked third-party assets: helvetica-neue-5/ (the two shipped faces)
+assets/fonts/            # the embedded faces and their licence text, tracked (D-037 names the grant)
+public/                  # the foundry's complete drop, tracked: variable file, italics, other weights, the
+                         #   outgoing Helvetica set. No build reads it — the CMake list names assets/fonts/ only
 docs/                    # decisions.md, host-layout-matrix.md
-build/<config>/          # every build tree — build/release or build/debug
+build/<config>/          # host build trees; the container's live in the /ct/build volume
 ```
 
 Ignore everything in `.gitignore` — `build/`, the stray top-level `CMakeFiles/`, `src/scratch/`, the
@@ -238,7 +242,8 @@ against them, never through them.
 ## 9. Testing standard
 
 `include(CTest)` at the root, one console test target per library, discovered by
-`catch_discover_tests`, run with `ctest --test-dir build/<config> --output-on-failure`.
+`catch_discover_tests`, run with `ctest --test-dir $(BUILD_ROOT)/<config> --output-on-failure` —
+the tree root §11 defines.
 
 * **Never couple a test to `Catch2` / `Catch2WithMain`** — those target names belong to a third-party
   submodule scheduled for removal and collide with `FetchContent`. Build against `EntangleCatch2`, the
@@ -246,8 +251,8 @@ against them, never through them.
   `main()` compiles the same amalgamated source with `CATCH_AMALGAMATED_CUSTOM_MAIN=1` — still one
   Catch2 per program.
 * **A case name is the only filter here, and a filter matching nothing exits 0.** Never select by target
-  name; quote the pass count with the exit status. Run sets: quick
-  `ctest --test-dir build/<config> -E "OfflineRender|cross product long"`, long `OfflineRender` plus
+  name; quote the pass count with the exit status. Run sets: quick `ctest --test-dir
+  $(BUILD_ROOT)/<config> -E "OfflineRender|cross product long"`, long `OfflineRender` plus
   `"cross product long: "`.
 * **A behaviour change ships with a test**, or with a written reason it cannot be tested. "Awkward" is
   not that reason; "needs a host clock" usually is.
@@ -284,17 +289,26 @@ error.
 ## 11. Build and validate
 
 ```bash
-make install                              # submodules + configure into build/release
-make install BUILD_TYPE=Debug             # -> build/debug
+make install                              # submodules + configure into $BUILD_ROOT/release
+make install BUILD_TYPE=Debug             # -> $BUILD_ROOT/debug
 make build                                # everything, Ninja
-cmake --build build/release --target Dsp -j4          # iterate: narrowest target that proves the change
-cmake --build build/release --target vstplug_VST3 -j4
-ctest --test-dir build/release -R "level normalizer" --output-on-failure
+# Raw cmake/ctest take the same root: build/ on the host, /ct/build/ in the container.
+cmake --build "${BUILD_ROOT:-build}/release" --target Dsp -j4   # iterate: narrowest target that proves the change
+cmake --build "${BUILD_ROOT:-build}/release" --target vstplug_VST3 -j4
+ctest --test-dir "${BUILD_ROOT:-build}/release" -R "level normalizer" --output-on-failure
 ```
 
-* Every build tree is `build/<config>` at the repo root — relative, never absolute. A tree anywhere
-  else escapes the container's bind mount and leaves files owned by a uid the host cannot unlink.
-  Host and container trees of the same name are different storage.
+* A build tree is `$(BUILD_ROOT)/<config>`: `build/release` at the repo root on the host,
+  `/ct/build/release` in the container, where compose sets `BUILD_ROOT` to a volume mounted
+  **outside** the `/workspace` export. One command both sides, different storage — a host
+  `build/release` and the container's are not the same files. Never move that mount inside the
+  export: the guest creates the mountpoint on the host and guards it with a `deny delete` ACE,
+  and host `rm -rf build` then fails on a directory the host owns (F-028).
+* A build root that moved keeps `FETCHCONTENT_BASE_DIR` at the old absolute path, so the pinned
+  Catch2 amalgam compiles out of the tree it was first configured in and the next regeneration dies
+  on a `CMakeCache.txt` the other host wrote there. Re-configure with `-DFETCHCONTENT_BASE_DIR` at
+  `$(BUILD_ROOT)/<config>/_deps` (plus `-DFETCHCONTENT_SOURCE_DIR_ENTANGLE_CATCH2` to reuse the
+  populated copy offline) and check `build.ninja` names no path under the repo's own `build/`.
 * `configure_file` writes `src/Entangle/Entangle.h` back into the source tree — the one exception
   CMake makes.
 * Cap JUCE target builds at `-j4` in this container; `-j8`/`nproc` OOM-kills the link.

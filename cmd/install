@@ -1,10 +1,11 @@
 #!/bin/bash
 # Usage: cmd/install [debug|release]   (default: release)
-# Builds live in build/<config> relative to the repo root, never an absolute path: in the
-# container the same relative path resolves under /workspace/build, which is a volume.
+# Trees live in $BUILD_ROOT/<config>: the repo-relative build/<config> on the host, and
+# /ct/build/<config> in the container, where compose sets BUILD_ROOT to the build volume.
 
 cd "$(dirname "$0")/.." || exit 1
 config="${1:-release}"
+root="${BUILD_ROOT:-build}"
 
 case "$config" in
     debug)   buildType=Debug ;;
@@ -12,4 +13,4 @@ case "$config" in
     *)       echo "usage: cmd/install [debug|release]" >&2; exit 2 ;;
 esac
 
-git submodule update --init --recursive && cmake -G Ninja -S . -B "build/$config" -DCMAKE_BUILD_TYPE="$buildType"
+git submodule update --init --recursive && cmake -G Ninja -S . -B "$root/$config" -DCMAKE_BUILD_TYPE="$buildType"

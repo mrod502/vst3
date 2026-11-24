@@ -123,12 +123,10 @@ RUN set -eux; \
              /opt/qwen-seed; \
     chown -R "${USERNAME}:${GROUP}" "/home/${USERNAME}"
 
-# /workspace/build is the build volume at runtime, holding every container tree
-# (build/debug, build/release). Docker seeds an empty named volume from the image's path
-# here, so the directory must exist and already belong to the dev user or the volume
-# mounts root-owned and CMake cannot write CMakeFiles. Seeding happens only when the
-# volume is created, so an existing root-owned vst3-build survives this layer.
-RUN mkdir -p /workspace/build && chown -R ${USERNAME} /workspace
+# /ct/build is the build volume at runtime and sits outside the exported /workspace tree on
+# purpose: a mountpoint inside the export is created on the host by the guest and guarded with
+# a `deny delete` ACE, which makes the host's build/ impossible to remove.
+RUN mkdir -p /ct/build && chown -R "${USERNAME}:" /ct/build
 
 RUN git config --system --add safe.directory /workspace
 
@@ -174,6 +172,16 @@ seed_qwen() {
 # tar exits 1 when a host file changed while being read, which leaves a usable copy.
 # A hard failure warns instead of aborting so the workspace still starts, empty-config.
 seed_qwen || echo "warning: could not seed ~/.qwen from /opt/qwen-seed" >&2
+
+# A named volume takes its ownership only at creation, so a vst3-build seeded with the wrong
+# uid stays unwritable across every rebuild. Warn, don't abort: this shell is where the
+# volume gets removed.
+if ! touch /ct/build/.writable-probe 2>/dev/null; then
+    echo "warning: /ct/build is not writable by uid $(id -u); clear the stale volume with:" \
+         "docker compose down && docker volume rm vst3-build" >&2
+else
+    rm -f /ct/build/.writable-probe
+fi
 
 exec "$@"
 EOF

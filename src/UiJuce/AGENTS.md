@@ -6,7 +6,7 @@ colour and em figure comes from `src/Ui` — **no widget computes geometry or na
 
 | File | Role |
 |---|---|
-| `Theme.hpp/.cpp` | the skin: five tokens as a `ColourScheme`, seven roles as `Font`s, the kit's flat paint overrides, `drawCapAlignedText`, `capHeightOf` |
+| `Theme.hpp/.cpp` | the skin: five tokens as a `ColourScheme`, seven roles as `Font`s, the kit's flat paint overrides, `drawCapAlignedText`, `capHeightOf`, `measureText`/`measureRun`, and the label column the shell resolved (`setLabelColumnPx`/`labelColumnPx`) |
 | `FontFactory.hpp/.cpp` | the only place a face is obtained — from binary data, never by family name |
 | `Panel` | a sheet or ink field |
 | `Bar`, `PieDial` | `Slider` subclasses (bar control, dial control) |
@@ -24,9 +24,13 @@ colour and em figure comes from `src/Ui` — **no widget computes geometry or na
   `setColourScheme`, because that call discards earlier overrides. The inherited slot setters are
   shadowed private so the palette stays write-once.
 - **Type:** faces arrive as embedded binary data resolved with `createSystemTypefaceFor` +
-  `FontOptions{}.withTypeface` (D-025). A family name is never passed to JUCE: JUCE 9 resolves no
-  typeface for a family it cannot match and the null kills the process later. A missing face is a
-  broken build, not a substituted font.
+  `FontOptions{}.withTypeface` (D-025) — the two tracked OTFs in `public/ClashDisplay_Complete/Fonts/OTF/`, Light
+  and Bold, embedded whole (D-037). A family name is never passed to JUCE: JUCE 9 resolves no typeface for a
+  family it cannot match and the null kills the process later. A missing face is a broken build, not a substituted
+  font. The factory pins the line box (`sLineGap`, `sCapHeight`, `sXHeight`) so a role's cap does not drift with
+  the rasteriser, and pitches the **digits** to one advance — `isFixedPitchCharacter` decides, and the codepoint
+  reaches `GlyphArrangement` through `String::charToString`, never `String(char32_t)`, which formats the number
+  (F-030). A face's identity is its PostScript name (nameID 6) read out of the bytes, not `Font::getStyle()`.
 - **Two scales, one division.** The grid's `k` is px per mm; the ramp's `k` is 1.0 at the shipped
   sheet. `Theme::fontScaleFor` is the only place the kit divides them. Passing a window scale straight
   to `fontFor` gives 3.778×-too-big type, silently.
@@ -34,14 +38,23 @@ colour and em figure comes from `src/Ui` — **no widget computes geometry or na
   `positionComboBoxText` anchors `topLeft` because `ComboBox` centres its child label's em box.
 - **Suppression, not recolour.** JUCE's default chrome paints colours the five tokens never named, so
   the widget hooks are overridden at the leaf: `drawLinearSlider`, `…Background`, `…Outline`,
-  `…Thumb`, `getSliderThumbRadius` → 0, `getSliderLayout` (carving the label column so the drag region
-  *is* the painted body), `drawRotarySlider`, `drawComboBox`, `getComboBoxFont`,
-  `drawButtonBackground`. Overriding only the top-level hook leaves a track, a thumb and an outline
-  drawable by another path.
+  `…Thumb`, `getSliderThumbRadius` → 0, `getSliderLayout` (carving the label column the shell resolved, so the
+  drag region *is* the painted body and the pointer, the paint and the value's start read one number),
+  `drawRotarySlider`, `drawComboBox`, `getComboBoxFont`, `drawButtonBackground`. Overriding only the top-level
+  hook leaves a track, a thumb and an outline drawable by another path.
 - **The dial fills `discRectOf(face)`,** not its widget rect, so the shape painted and the circle
   `hitTestPie` answers with are one shape.
-- **Text is measured, not assumed** — a caption's box comes from the ramp and the grid; the kit clips
-  at the box edge.
+- **The datum radial is a mode capability, not something the sheet wears.** `Theme::drawRotarySlider` fills the
+  one `ink` radial only in `PieMode::datumAtZero`, and the shipped blend dial is `proportional`, so no `ink`
+  pixel lies inside any dial's disc (D-038, amending M10 `02` §0 C). The mode, its geometry cases and the
+  `UiProbe`/`UiAllocTests` legs that paint it stay: they measure the capability, not the product.
+- **Text is measured, then placed — never measured while painting.** `measureText(words, role, k)` reports one
+  run's advance, cap and descent; `measureRun(words, role, k, maxWidthPx)` lays it in a box that wide and adds
+  `lineCount` and the **unrounded** `lineHeightPx` the placer's edges come from. Both read a cache keyed on
+  `(string, role, k, maxWidthPx)`; `paint()` calls neither, and `UiAllocTests`' equality is what proves it. The
+  room handed in is the room the verdict is given: a rotated caption's is `RotatedPlacement::extentPx`, not the
+  component's height; a bar label's is the label column, not the widget. What a measurement then refuses is
+  `src/Ui/TextFit.hpp` (D-031).
 - **The display panels draw, they do not decide.** A panel is handed arrays of readings and the axis figures,
   holds the window it was last given, and builds its paths in `refresh()`. It reads no processor and borrows
   nothing: what it plots is a copy. Its axis and its rule are **separate** inputs (`setAxisDbRange`,
@@ -62,10 +75,11 @@ is reachable from the audio thread, and nothing in it holds a pointer to DSP sta
 ## Build and test
 
 ```bash
-cmake --build build/release --target UiJuce UiJuceTests -j4
-ctest --test-dir build/release -R "ui: skin:"  --output-on-failure
-ctest --test-dir build/release -R "ui: probe:" --output-on-failure
-ctest --test-dir build/release -R "ui: alloc:" --output-on-failure
+R="${BUILD_ROOT:-build}/release"
+cmake --build "$R" --target UiJuce UiJuceTests -j4
+ctest --test-dir "$R" -R "ui: skin:"  --output-on-failure
+ctest --test-dir "$R" -R "ui: probe:" --output-on-failure
+ctest --test-dir "$R" -R "ui: alloc:" --output-on-failure
 ```
 
 `UiJuceTests` renders offscreen with the software rasteriser (no peer, no display). `UiProbe` asserts
@@ -81,6 +95,8 @@ JUCE_USE_CURL=0` PUBLIC — drop either and the link fails with `undefined refer
 
 ## Decisions
 
-D-024, D-025, F-022 (the nine slots, the derived widget table, the null typeface), F-023 (hooks live on
-the widget, the leaf-hook reachability, the rasteriser's allocations), F-024 (the metrics the embedded
-face moved) — `docs/decisions.md`.
+D-024, D-025, D-031 (the fit rule's skin half), D-037 (the vendored face and its pinned metrics), D-038 (the
+blend dial is proportional and the datum mark is off the product), F-022 (the nine
+slots, the derived widget table, the null typeface), F-023 (hooks live on the widget, the leaf-hook reachability,
+the rasteriser's allocations), F-024 (the metrics the embedded face moved), F-030 (the face-swap surprises) —
+`docs/decisions.md`.

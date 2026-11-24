@@ -64,8 +64,12 @@ private:
     ui::Text layoutReadout;
     ui::Text grainReadout;
     ui::Text blendReadout;
-    ui::Text volumeCaption;
+    ui::Text levelCaption;
     ui::Text windowCaption;
+    /** The words that name cell 9's coupled pair — the choice bars are inset by the column these measure into,
+        because the pair is coupled by the 2×-hop floor and two identical-looking bars must not be guessed. */
+    ui::Text grainLabel;
+    ui::Text hopLabel;
     ui::Text eqCaption;
     ui::Text vibesCaption;
     ui::Text waveformCaption;

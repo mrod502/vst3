@@ -12,10 +12,20 @@ juce_add_plugin(
     PRODUCT_NAME "Entangle"
 )
 
+# JUCE seals the bundle in checkBundleSigning.cmake before it generates moduleinfo.json, so the JSON is
+# left unsealed and hosts that validate the seal (Ableton Live: "a sealed resource is missing or invalid")
+# reject the bundle. POST_BUILD steps run in definition order, so this re-signs once the bundle is final.
+if(APPLE) # TARGET_BUNDLE_DIR is Bundle-only; a Linux VST3 is a shared lib, so unguarded this fails configure there.
+add_custom_command(TARGET ${PROJECT_NAME}_VST3 POST_BUILD
+    COMMAND /usr/bin/codesign --force --sign - $<TARGET_BUNDLE_DIR:${PROJECT_NAME}_VST3>
+    VERBATIM)
+endif()
+
 target_sources(${PROJECT_NAME}
 PRIVATE
     EntangleEditor.cpp
-    EntangleProcessor.cpp)
+    EntangleProcessor.cpp
+    SheetLayout.cpp)
 
 target_compile_definitions(${PROJECT_NAME}
 PRIVATE

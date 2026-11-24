@@ -26,13 +26,9 @@ inline constexpr double kFullTurnRadians = 2.0 * std::numbers::pi;
 inline constexpr double kSixOClockRadians = 0.5 * std::numbers::pi;
 inline constexpr double kTwelveOClockRadians = -0.5 * std::numbers::pi;
 
-/** How a wedge grows from its datum.
-
-    proportional is the mockup's own drawing rule — "how much of the range", from 6 o'clock, clockwise,
-    one full turn for the range. datumAtZero is what a bipolar morph needs and what `blend` ships with:
-    the wedge grows clockwise for positive and counter-clockwise for negative from a 12 o'clock datum, so
-    the geometry alone says which side of centre the value is on. Half a turn each way, which puts either
-    extreme at 6 o'clock and keeps the whole range at one turn, as proportional does. */
+/** How a wedge grows from its datum. `proportional` is the mockup's rule — how much of the range, from
+    6 o'clock clockwise, one full turn. `datumAtZero` grows each way from a 12 o'clock datum, so the
+    geometry alone names the side of centre; no control on the shipped sheet asks for it (D-038). */
 enum class PieMode
 {
     proportional,

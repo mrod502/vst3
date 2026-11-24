@@ -47,8 +47,16 @@ juce::Rectangle<int> Bar::body() const
 {
     auto bounds = getLocalBounds();
 
-    if (!label.isEmpty())
-        bounds.removeFromLeft (BarGeometry::labelColumnAt (kitScaleFor (*this)));
+    /* The skin's column, because it is the number `getSliderLayout` carved the track with on the last
+       resize — and that cached track region is what the paint hooks and the pointer mapping both use.
+       Reading the millimetre figure here instead would put one number on the words and another on the
+       click, which is `01` risk 1. */
+    if (! label.isEmpty())
+    {
+        const auto* theme = dynamic_cast<const Theme*> (&getLookAndFeel());
+        bounds.removeFromLeft (theme != nullptr ? theme->labelColumnPx (kitScaleFor (*this))
+                                                : BarGeometry::labelColumnAt (kitScaleFor (*this)));
+    }
 
     return bounds;
 }

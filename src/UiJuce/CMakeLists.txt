@@ -6,18 +6,17 @@
 # UiJuce recompiles those TUs itself and must be told the same shape; and the plugin already builds
 # juce_core with curl and the web browser off, so a consumer that was not told ends up with two
 # copies of juce_core that disagree and undefined libcurl symbols at the plugin link.
-# The design's face, compiled in (D-025). Helvetica Neue ships with macOS and nowhere else and JUCE 9
-# resolves no substitute for a family it cannot match (F-022), so a family-name request draws the sheet in
-# somebody else's type on every host but one. The two faces the ramp binds to live under public/ and are
-# embedded, which is the only route that draws Neue everywhere; see FontFactory.cpp for what that buys and
-# costs. Only these two: the ramp declares two weights and a third embedded face is 600 KB of nobody reading it.
+
+# The two faces the ramp binds, taken unmodified from the foundry's drop, which is tracked: a third weight is one
+# more line here and ~26 kB (D-037's byte table). FFL §02 and §05 make subsetting, format conversion, renaming and
+# metadata edits a Derivative Work, so each face ships whole, as it arrived, licence text beside it in the drop.
 juce_add_binary_data(
     EntangleFonts
     NAMESPACE ui
     HEADER_NAME EntangleFonts.h
     SOURCES
-        "${CMAKE_SOURCE_DIR}/public/helvetica-neue-5/HelveticaNeueBold.otf"
-        "${CMAKE_SOURCE_DIR}/public/helvetica-neue-5/HelveticaNeueThin.otf"
+        "${CMAKE_SOURCE_DIR}/public/ClashDisplay_Complete/Fonts/OTF/ClashDisplay-Light.otf"
+        "${CMAKE_SOURCE_DIR}/public/ClashDisplay_Complete/Fonts/OTF/ClashDisplay-Bold.otf"
     )
 
 add_library(

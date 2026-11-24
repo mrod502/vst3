@@ -4,6 +4,7 @@
 add_executable(UiTests
     PaletteTests.cpp
     TypeRampTests.cpp
+    TextFitTests.cpp
     GridTests.cpp
     BarGeometryTests.cpp
     PieGeometryTests.cpp

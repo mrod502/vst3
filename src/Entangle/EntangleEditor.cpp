@@ -1,4 +1,5 @@
 #include "EntangleEditor.h"
+#include "SheetLayout.h"
 
 #include <BarGeometry.hpp>
 #include <LevelNormalizer.hpp>
@@ -11,135 +12,10 @@
 #include <initializer_list>
 #include <utility>
 
+namespace layout = entangle::sheet;
+
 namespace
 {
-/** One window's worth of sheet measurements: the grid's `k` plus every bar and type figure a box's
-    arithmetic is taken from, read once per layout pass so no box names a size of its own. */
-struct SheetGeometry
-{
-    int barHeight{};
-    int labelColumn{};
-    int rowPitch{};
-    int wordmarkCap{};
-    int captionCap{};
-    /* The `micro` em in device pixels, unrounded — the truth stack's unit, because the stack's edges are taken
-       off it in multiples (see `placeTruthColumn`). It is also the height of one drawn line: JUCE 9 lays a
-       wrapped line one em below the last, ascent + descent being the em rather than the cap. */
-    double microEm{};
-    int rotatedCap{};
-    int rotatedInset{};
-};
-
-/** Row top to row top for a group whose last row closes the cell's bottom edge. The bar body is a
-    measurement and the inter-row gap is not, so the fit is taken up at the gap — the mockup's own box-6
-    pitch is 0.85 mm more than the cell allows for three rows. */
-[[nodiscard]] int rowPitchFor (int cellHeight, int barHeight) noexcept
-{
-    return cellHeight > barHeight ? (cellHeight - barHeight) / 2 : barHeight;
-}
-
-/** n `micro` ems in device pixels, rounded once. The truth stack's reserve unit — see `placeTruthColumn`. */
-[[nodiscard]] int reserveInEms (int ems, double emPx) noexcept
-{
-    return static_cast<int> (std::lround (static_cast<double> (ems) * emPx));
-}
-
-/** The wordmark's cap top sits on the box's top edge, which is the sheet's 10 mm margin line; the master
-    strip's two rows start below its cap band. */
-void placeMasterStrip (ui::Text& wordmark, ui::Bar& outputGain, juce::TextButton& bypass,
-                       const ui::Rect& box, const SheetGeometry& sheet)
-{
-    const int firstRow = box.y + sheet.wordmarkCap;
-
-    wordmark.setBounds (box.x, box.y, box.w, firstRow - box.y);
-    outputGain.setBounds (box.x, firstRow, box.w, sheet.barHeight);
-    bypass.setBounds (box.x, firstRow + sheet.rowPitch, box.w, sheet.barHeight);
-}
-
-/** The rotated caption that names the cell to its right, in its own cell's right edge. Ink runs rightward
-    from a rotated caption's pivot, so the component is one cap inside the box's right edge and the cell it
-    names stays pure ground. */
-void placeEdgeCaption (ui::Text& caption, const ui::Rect& box, const SheetGeometry& sheet)
-{
-    caption.setBounds (box.right() - sheet.rotatedCap - sheet.rotatedInset, box.y,
-                       sheet.rotatedCap + sheet.rotatedInset, box.h);
-}
-
-/** The sheet's only text box. The group heading holds its bottom edge and the four lines stack upward from
-    it, so a readout that wraps into a second line grows into the empty ground above rather than over the
-    heading: the clamp clause is 42 characters and the column is one cell wide at the `micro` role.
-
-    Six ems of reserve, 1:1:2:2, and every edge taken off the em at once rather than stepped off the previous
-    line's rounded bottom. Stepping multiplies the em's own half-pixel by the six lines it passes through —
-    4 px between the reference sheet and a window 0.75× it, on the one stack where the sheet would then not be
-    scaling as one. */
-void placeTruthColumn (ui::Text& status, ui::Text& summary, ui::Text& grain, ui::Text& blendWords,
-                       ui::Text& heading, ui::Text& edgeCaption,
-                       const ui::Rect& box, const SheetGeometry& sheet)
-{
-    const int headingTop = box.bottom() - sheet.captionCap;
-
-    heading.setBounds (box.x, headingTop, box.w, box.bottom() - headingTop);
-
-    const int stackTop = headingTop - reserveInEms (6, sheet.microEm);
-    int laid = 0;
-
-    for (const auto& line : { std::pair{ &status, 1 }, std::pair{ &summary, 1 },
-                              std::pair{ &grain, 2 }, std::pair{ &blendWords, 2 } })
-    {
-        line.first->setBounds (box.x, stackTop + reserveInEms (laid, sheet.microEm), box.w,
-                               reserveInEms (line.second, sheet.microEm));
-        laid += line.second;
-    }
-
-    placeEdgeCaption (edgeCaption, box, sheet);
-}
-
-/** The dial takes what the caption column leaves, square, so the pair closes on the cell and the face the
-    wedge is inscribed in is the rect that is painted. */
-void placeBlendDial (ui::Text& caption, ui::PieDial& dial, const ui::Rect& box, const SheetGeometry& sheet)
-{
-    const int side = std::min (box.w - sheet.labelColumn, box.h);
-
-    caption.setBounds (box.x, box.y, box.w, box.h);
-    dial.setBounds (box.x + sheet.labelColumn, box.y + (box.h - side) / 2, side, side);
-}
-
-/** The level stage's three rows: the two dials it has and the one live figure worth a meter. The third row
-    closes the cell's bottom edge, which is why the meter — the only read-only widget in the group — sits
-    there rather than between the two controls it reports on. */
-void placeLevelStage (ui::Bar& amount, ui::Bar& floor, ui::Bar& meter, const ui::Rect& box,
-                      const SheetGeometry& sheet)
-{
-    amount.setBounds (box.x, box.y, box.w, sheet.barHeight);
-    floor.setBounds (box.x, box.y + sheet.rowPitch, box.w, sheet.barHeight);
-    meter.setBounds (box.x, box.y + 2 * sheet.rowPitch, box.w, sheet.barHeight);
-}
-
-/** The two display panels, each a two-column span: boxes 7–8 the applied correction, boxes 11–12 the three
-    envelopes. A span is the grid's own object, so the panel's edges are its first and last box's edges and
-    the gutter between them is inside the ink rather than a ground stripe through it. */
-void placeDisplayPanels (ui::ResponsePanel& response, ui::EnvelopePanel& envelopes,
-                         const ui::Grid& grid)
-{
-    const ui::Rect correction = grid.span (2, 1, 2);
-    const ui::Rect levels = grid.span (2, 2, 2);
-
-    response.setBounds (correction.x, correction.y, correction.w, correction.h);
-    envelopes.setBounds (levels.x, levels.y, levels.w, levels.h);
-}
-
-/** The coupled pair adjacent under its group caption, the lower choice closing the cell's bottom edge. */
-void placeWindowSize (ui::Text& caption, ui::ChoiceBar& grain, ui::ChoiceBar& hop,
-                      const ui::Rect& box, const SheetGeometry& sheet)
-{
-    const int lower = box.bottom() - sheet.barHeight;
-
-    caption.setBounds (box.x, box.y, box.w, sheet.captionCap);
-    grain.setBounds (box.x, lower - sheet.rowPitch, box.w, sheet.barHeight);
-    hop.setBounds (box.x, lower, box.w, sheet.barHeight);
-}
-
 /** Reads one `key=value` field out of the layout report, stopping at the next space. Every key this editor
     reads is unique in the line and none is a prefix of another that carries an `=` — the report's own
     format (§5.21 checks it field by field) is what makes the search total. */
@@ -163,15 +39,17 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
       layoutReadout { "layoutReadout", {}, ui::TypeRole::micro },
       grainReadout { "grainReadout", {}, ui::TypeRole::micro },
       blendReadout { "blendReadout", {}, ui::TypeRole::micro },
-      volumeCaption { "volumeCaption", "Volume Ctrl", ui::TypeRole::caption },
+      levelCaption { "levelCaption", "Level Ctrl", ui::TypeRole::caption },
       windowCaption { "windowCaption", "Window Size", ui::TypeRole::caption },
+      grainLabel { "grainLabel", "Grain", ui::TypeRole::micro },
+      hopLabel { "hopLabel", "Hop", ui::TypeRole::micro },
       eqCaption { "eqCaption", "EQ", ui::TypeRole::rotatedCaption },
       vibesCaption { "vibesCaption", "Vibes", ui::TypeRole::rotatedCaption },
       waveformCaption { "waveformCaption", "Waveform", ui::TypeRole::rotatedCaption },
       outputGain { EntangleAudioProcessor::outputGainParameterId },
       normalisationAmount { EntangleAudioProcessor::normalisationAmountParameterId },
       silenceFloor { EntangleAudioProcessor::silenceFloorParameterId },
-      blend { ui::PieMode::datumAtZero, EntangleAudioProcessor::blendParameterId },
+      blend { ui::PieMode::proportional, EntangleAudioProcessor::blendParameterId },
       hopSelector { EntangleAudioProcessor::hopParameterId },
       grainSelector { EntangleAudioProcessor::grainLengthParameterId },
       appliedCorrection { "appliedCorrection" }
@@ -209,10 +87,11 @@ EntangleAudioProcessorEditor::EntangleAudioProcessorEditor (EntangleAudioProcess
     bypassToggle.setButtonText ("Bypass");
     bypassToggle.setClickingTogglesState (true);
 
-    const std::array<juce::Component*, 20> children { &wordmark,     &statusLine,
+    const std::array<juce::Component*, 22> children { &wordmark,     &statusLine,
                                                      &layoutReadout, &grainReadout,
-                                                     &blendReadout,  &volumeCaption,
-                                                     &windowCaption, &eqCaption,
+                                                     &blendReadout,  &levelCaption,
+                                                     &windowCaption, &grainLabel,
+                                                     &hopLabel,      &eqCaption,
                                                      &vibesCaption,  &waveformCaption,
                                                      &outputGain,    &normalisationAmount,
                                                      &silenceFloor,  &blend,
@@ -324,26 +203,35 @@ bool EntangleAudioProcessorEditor::updateGrainReadout()
 
     shownGrainText = text;
     grainReadout.setText (text, juce::dontSendNotification);
+
+    /* The truth stack's reserve is counted in the lines these words actually make, so new words are new
+       geometry: without this the stack keeps whatever it measured before the first truth arrived. */
+    resized();
     return true;
 }
 
 bool EntangleAudioProcessorEditor::updateBlendReadout()
 {
     const float dial = static_cast<float> (blend.getValue());
-    const float effective = processorRef.effectiveBlendPosition();
+    const float effectiveQ = processorRef.effectiveBlendPosition() + 1.0f;
 
-    auto describe = [] (float position)
+    /* The ends are named in words because A-2 took the dial's only ink mark and the palette forbids a tint
+       carrying state: a proportional wedge is empty at q = 0 and full at q = 1, so the sentence carries
+       "which end am I at" (D-038). */
+    auto describe = [] (float q)
     {
-        if (position == 0.0f)
-            return juce::String ("wet only");
-        return juce::String (position, 2) + (position < 0.0f ? " (dry A)" : " (dry B)");
+        if (q <= 0.0f)
+            return juce::String ("fully dry A");
+        if (q >= 1.0f)
+            return juce::String ("fully wet");
+        return juce::String ("dry A + wet");
     };
 
-    auto text = juce::String ("Blend ") + describe (effective);
+    auto text = juce::String ("Blend ") + juce::String (effectiveQ, 2) + " " + describe (effectiveQ);
 
     // The pin is part of what is running, so it is reported rather than the dial alone: with no
     // sidechain bus the plugin renders dry A whatever this control says (D-011).
-    if (effective != dial)
+    if (effectiveQ != dial)
         text += "  (dial " + juce::String (dial, 2) + ": no sidechain, so the effect is pinned off)";
 
     if (text == shownBlendText)
@@ -351,6 +239,7 @@ bool EntangleAudioProcessorEditor::updateBlendReadout()
 
     shownBlendText = text;
     blendReadout.setText (text, juce::dontSendNotification);
+    resized();   // new words, new line count, new stack reserve
     return true;
 }
 
@@ -372,6 +261,7 @@ bool EntangleAudioProcessorEditor::updateLayoutReadout()
                            + " L" + reportField (report, "Lrun"),
                            juce::dontSendNotification);
     layoutReadout.setTooltip (report);
+    resized();   // new words, new line count, new stack reserve
 
     return true;
 }
@@ -391,6 +281,7 @@ bool EntangleAudioProcessorEditor::updateInertStates()
     blend.setEnabled (connected);
     normalisationAmount.setEnabled (connected);
     silenceFloor.setEnabled (connected);
+    resized();   // new words, new line count, new stack reserve
 
     return true;
 }
@@ -486,9 +377,9 @@ void EntangleAudioProcessorEditor::updateMeter (const engine::TraceSnapshot& lat
         appliedCorrection.setValue (fraction, juce::dontSendNotification);
 
     /* The sign lives in the words because the bar itself is one-sided; a fill that only ever grows would
-       report a −24 dB cut and a +24 dB boost identically, which is a meter that lies. */
-    const auto words = juce::String (gain < 0.0f ? "-" : "+") + juce::String (std::abs (gain), 1)
-                       + " dB";
+       report a −24 dB cut and a +24 dB boost identically, which is a meter that lies. Whole decibels only: the
+       words share the body with the fill and a tenth-of-a-dB figure is ink the stage cannot resolve (D-037). */
+    const auto words = juce::String (gain < 0.0f ? "-" : "+") + juce::String (std::abs (gain), 0);
     if (words != shownMeterText)
     {
         shownMeterText = words;
@@ -501,27 +392,71 @@ void EntangleAudioProcessorEditor::resized()
     const ui::Grid grid (getWidth(), getHeight());
     theme.setScale (grid.k ());
     const float rampScale = ui::Theme::fontScaleFor (grid.k ());
-    const auto capOf = [this, rampScale] (ui::TypeRole role)
-                       {
-                           return static_cast<int> (std::lround (theme.capHeightOf (role, rampScale)));
-                       };
+    const auto cell = grid.cellPx();
 
-    SheetGeometry sheet;
-    sheet.barHeight = ui::BarGeometry::bodyHeightAt (grid.k ());
-    sheet.labelColumn = ui::BarGeometry::labelColumnAt (grid.k ());
-    sheet.rowPitch = rowPitchFor (grid.cellPx().h, sheet.barHeight);
-    sheet.wordmarkCap = capOf (ui::TypeRole::wordmark);
-    sheet.captionCap = capOf (ui::TypeRole::caption);
-    sheet.microEm = theme.fontFor (ui::TypeRole::micro, rampScale).getHeight ();
-    sheet.rotatedCap = capOf (ui::TypeRole::rotatedCaption);
-    sheet.rotatedInset = ui::rotatedCaptionInsetAt (grid.k ());
+    /* Measure-then-place: every word the sheet draws is shaped once here and the boxes are built from that pass,
+       not from the millimetre figures, which are the floor and not the fact. A resize measures; a repaint draws
+       what the resize decided — nothing here is reached from paint(). */
+    const auto extentOf = [this, rampScale] (const juce::String& words, ui::TypeRole role)
+                          {
+                              return theme.measureText (words, role, rampScale).extent;
+                          };
+    const auto reserveOf = [this, rampScale] (const juce::String& words, ui::TypeRole role, int roomPx)
+                           {
+                               return ui::reserveFor (theme.measureRun (words, role, rampScale, roomPx).extent);
+                           };
 
-    placeMasterStrip (wordmark, outputGain, bypassToggle, grid.box (1), sheet);
-    placeTruthColumn (statusLine, layoutReadout, grainReadout, blendReadout, volumeCaption, eqCaption,
-                      grid.box (2), sheet);
-    placeBlendDial (vibesCaption, blend, grid.box (4), sheet);
-    placeLevelStage (normalisationAmount, silenceFloor, appliedCorrection, grid.box (6), sheet);
-    placeWindowSize (windowCaption, grainSelector, hopSelector, grid.box (9), sheet);
-    placeEdgeCaption (waveformCaption, grid.box (10), sheet);
-    placeDisplayPanels (responsePanel, envelopePanel, grid);
+    layout::Geometry geom;
+    geom.barHeight = ui::BarGeometry::bodyHeightAt (grid.k ());
+    geom.rowPitch = layout::rowPitchFor (cell.h, geom.barHeight);
+    geom.dialColumn = ui::BarGeometry::labelColumnAt (grid.k ());
+    geom.rotatedInset = ui::rotatedCaptionInsetAt (grid.k ());
+    geom.microEm = theme.fontFor (ui::TypeRole::micro, rampScale).getHeight ();
+
+    geom.wordmarkBand = ui::reserveFor (extentOf (wordmark.getText (), ui::TypeRole::wordmark));
+    geom.captionBand = std::max (reserveOf (levelCaption.getText (), ui::TypeRole::caption, cell.w),
+                                  reserveOf (windowCaption.getText (), ui::TypeRole::caption, cell.w));
+    /* A rotated run's line axis is the cell's height less the inset at both ends — that is the room the skin
+       hands it, so that is the width it is measured at, and its band is what the column must then hold. */
+    const int rotatedExtent = cell.h - 2 * geom.rotatedInset;
+    geom.rotatedBand = std::max ({reserveOf (eqCaption.getText (), ui::TypeRole::rotatedCaption, rotatedExtent),
+                                   reserveOf (vibesCaption.getText (), ui::TypeRole::rotatedCaption,
+                                              rotatedExtent),
+                                   reserveOf (waveformCaption.getText (), ui::TypeRole::rotatedCaption,
+                                              rotatedExtent)});
+
+    /* One column, four labels: the widest word decides it, and the Theme carries the answer to the body, the
+       value's start and the pointer's mapping, which is the only way those three cannot disagree (01 risk 1).
+       Cell 9's pair is named at the `micro` role, so it earns its own column rather than widening the bar rows. */
+    double widestBarLabel{};
+    for (const ui::Bar* bar : { &outputGain, &normalisationAmount, &silenceFloor, &appliedCorrection })
+        widestBarLabel = std::max (widestBarLabel, extentOf (bar->labelWords (), ui::TypeRole::barLabel).advancePx);
+
+    const double widestChoiceLabel = std::max (extentOf (grainLabel.getText (), ui::TypeRole::micro).advancePx,
+                                               extentOf (hopLabel.getText (), ui::TypeRole::micro).advancePx);
+
+    theme.setLabelColumnPx (ui::labelColumnFor (widestBarLabel, grid.k ()));
+    geom.choiceLabelColumn = ui::labelColumnFor (widestChoiceLabel, grid.k ());
+
+    /* The mockup's own allocation — one line of status, one of layout, two each for the grain and blend
+       clauses — is the floor, so a readout that has not been written yet still holds what it will need, and a
+       truth longer than the sheet was drawn for takes the ground above instead of losing its last line. */
+    const auto stackLines = [this, rampScale, width = cell.w] (const ui::Text& readout, int minimum)
+                            {
+                                return std::max (minimum, theme.measureRun (readout.getText (),
+                                                                            ui::TypeRole::micro, rampScale,
+                                                                            width).lineCount);
+                            };
+    const std::array<int, 4> truthStack { stackLines (statusLine, 1), stackLines (layoutReadout, 1),
+                                          stackLines (grainReadout, 2), stackLines (blendReadout, 2) };
+
+    layout::placeMasterStrip (wordmark, outputGain, bypassToggle, grid.box (1), geom);
+    layout::placeTruthColumn (statusLine, layoutReadout, grainReadout, blendReadout, levelCaption, eqCaption,
+                              truthStack, grid.box (2), geom);
+    layout::placeBlendDial (vibesCaption, blend, grid.box (4), geom);
+    layout::placeLevelStage (normalisationAmount, silenceFloor, appliedCorrection, grid.box (6), geom);
+    layout::placeWindowSize (windowCaption, grainLabel, grainSelector, hopLabel, hopSelector,
+                             grid.box (9), geom);
+    layout::placeEdgeCaption (waveformCaption, grid.box (10), geom);
+    layout::placeDisplayPanels (responsePanel, envelopePanel, grid);
 }

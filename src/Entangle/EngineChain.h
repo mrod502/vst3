@@ -111,17 +111,14 @@ inline engine::SchedulerConfig makeSchedulerConfig(const ChainConfig& chain)
     return schedulerConfig;
 }
 
-/** The dial position that actually runs (D-011).
+/** The law position that actually runs, from the dial's q in [0, 1] (D-011's pin, D-038's range).
 
-    With no sidechain bus this is pure A whatever the dial says. Under the law p = 0 is pure
-    convolution and convolution with a silent B is silence (D-002), so a host that cannot offer a
-    second bus would otherwise get silence from its own default setting — the property D-009 was
-    created to keep. The dial keeps its value, and the next prepare that sees a sidechain restores
-    it; that means a preset saved at p = 0 with a sidechain renders A in a host without one. The
-    editor reports this figure rather than the dial's, on the same grounds as the grain-length
-    readout: a control that lies about what is running is worse than no control. */
-inline float effectiveBlend(float dialPosition, bool sidechainActive) noexcept
+    The one place the dial's domain and the law's meet, so the shift cannot be applied twice. With no
+    sidechain bus the pin is q = 0 — p stays -1 — and the dial keeps its value, which is why the editor
+    and the layout report show this figure rather than the dial's (src/Entangle/AGENTS.md has the pin's
+    preset consequence). */
+inline float effectiveBlend(float dialQ, bool sidechainActive) noexcept
 {
-    return sidechainActive ? dialPosition : -1.0f;
+    return sidechainActive ? dialQ - 1.0f : -1.0f;
 }
 }

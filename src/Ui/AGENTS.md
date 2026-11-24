@@ -10,9 +10,10 @@ display.
 | Header | Holds |
 |---|---|
 | `Palette.hpp` | five `std::uint32_t` tokens in `0xAARRGGBB`, plus `relativeLuminance`, `contrastRatio` (WCAG 2.1) and `hslLightness` |
-| `TypeRamp.hpp` | seven roles, two weights, one em each, plus the horizontal squeeze for the two roles that have one. `resolve(role, k)` is the only route from the table to a pixel figure |
+| `TypeRamp.hpp` | seven roles, two weights, one em and one horizontal squeeze each — the table D-037 fitted so each role holds the cap height the sheet was laid out for. `resolve(role, k)` is the only route from the table to a pixel figure |
+| `TextFit.hpp` | the fit rule: `TextExtent` (advance, cap, descent — figures the skin measures, verdicts decided here), `reserveFor`, `stackReservePx`, `fitsWidth`, `labelColumnFor`/`labelClearsValue`, `isFixedPitchCharacter` |
 | `Grid.hpp` | the sheet's millimetres (the only place they are named), `kOf(widthPx)`, and a `Grid` answering `box(1…12)`, `span(col, row, cols)`, `marginPx`, `gutterPx`, `cellPx`. Also the window range the editor offers: `kMinimumWindowWidthPx` 595, `kMaximumWindowWidthPx` 2380, their heights, and `kSheetAspectRatio` |
-| `BarGeometry.hpp` | a bar's body (17.7 mm), the `round(0.8 mm × k)` inset applied **once** in `insetAt`, the value fill (`fillRect()`, and `fillRect(true)` for the active state), the 19.8 mm label column, `valueForX` / `xForValue`, and `hitRect()` — empty for a `readOnly` meter |
+| `BarGeometry.hpp` | a bar's body (17.7 mm), the `round(0.8 mm × k)` inset applied **once** in `insetAt`, the value fill (`fillRect()`, and `fillRect(true)` for the active state), the 19.8 mm label column — the **floor** under the column the shell resolves from its words (D-031) — `valueForX` / `xForValue`, and `hitRect()` — empty for a `readOnly` meter |
 | `PieGeometry.hpp` | `wedgeAngles(value, mode)` for a full turn and a symmetric half turn, the face's centre and inscribed radius, `forEachWedgePoint` (the walk a caller turns into a path), `radialQuad` and `datumRadialWidthAt` for the datum's ink mark, `hitTestPie`, and `discRectOf(face)` — the disc inscribed in the face |
 | `PanelGeometry.hpp` | the ink display panel's content inset — one gutter — and `inkContentRect(panel, k)`, inset once and symmetric; the trace contract below it |
 | `TextGeometry.hpp` | `kRotationRadians` (−90°), `kRotatedCaptionInsetMm` (2.0), the `TextOrientation` / `TextAlignment` / `TextSurface` vocabularies, `kInkFieldWordToken`, and the rotated caption's placement |
@@ -30,6 +31,24 @@ widget carries a pixel figure of its own. Rounding is one-time and absolute: an 
 `round(mm × k)` from the millimetres, never a rounded origin plus a rounded offset, because
 accumulated rounding drifts the gutter. A reserve built from a *font* figure is still a grid figure,
 so it rounds once as a multiple of the em — `round(n × em)`, not `n` times as a stepped `round(em)`.
+
+## Words fit by measurement (`TextFit.hpp`)
+
+A word is gated against the **room the paint gives it**, not the box it was placed in: a rotated caption's room is
+`RotatedPlacement::extentPx`, a bar label's is the label column, a bar value's is the body less the value inset.
+The slack is exactly zero — the sheet has no ellipsis and shrinks nothing, so a pixel over is a glyph lost
+(F-031 closed the legs that gated the box instead).
+
+| Name | Rule |
+|---|---|
+| `reserveFor` / `stackReservePx` | a band is ink rounded up once; a stack is the first line's ink plus **one unrounded pitch per extra line** — stepping a rounded pitch charges the box for ink it never draws (F-024 item 2) |
+| `fitsWidth` | `ceil(advance) ≤ room`, no tolerance |
+| `labelColumnFor` / `labelClearsValue` | the label column is the wider of the millimetre figure and the widest word + 1 px. The millimetres are the floor, never the ceiling — a column exists to hold its words. The shell resolves it once per resize and the skin carries that one number to the painted body, the value's start and the pointer's mapping |
+| `isFixedPitchCharacter` | the **digits** take one pitch; `.` `,` `−` `+` `/` keep their own, because readouts that must hold still change only in digits and a digit-width separator is a visible artefact (D-037) |
+
+**Why the measurement is not here.** `GlyphArrangement` is JUCE and lives in `src/UiJuce`, which measures; what
+lives here is what the figures *mean*, so the fit verdict is reachable from `UiTests` — a rule nobody can redden is
+not a rule.
 
 ## State vocabulary
 
@@ -71,9 +90,10 @@ sized at construction rather than grown.
 ## Build and test
 
 ```bash
-cmake --build build/release --target UiTests -j4
-ctest --test-dir build/release -R "ui:" --output-on-failure          # the whole UI suite
-ctest --test-dir build/release -R "ui: policy:" --output-on-failure  # source-text rules
+R="${BUILD_ROOT:-build}/release"
+cmake --build "$R" --target UiTests -j4
+ctest --test-dir "$R" -R "ui:" --output-on-failure          # the whole UI suite
+ctest --test-dir "$R" -R "ui: policy:" --output-on-failure  # source-text rules
 ```
 
 Tests live in `tests/`. `UiTests` links `Ui EntangleCatch2 EntangleAsserts` and nothing else — that
@@ -86,6 +106,6 @@ so quote the count with the status.
 
 ## Decisions
 
-D-024 (tokens, ramp, state vocabulary), D-025 (the shipped face), D-026 (window range), D-027 (the trace
-window and the axis-is-the-bound / rule-is-the-value split), F-022, F-023,
-F-024 — `docs/decisions.md`.
+D-024 (tokens, ramp, state vocabulary), D-025 (the embedded face), D-026 (window range), D-027 (the trace
+window and the axis-is-the-bound / rule-is-the-value split), D-031 (the fit rule and the label column), D-037 (the
+shipped face and its fitted ramp), F-022, F-023, F-024, F-030, F-031 — `docs/decisions.md`.

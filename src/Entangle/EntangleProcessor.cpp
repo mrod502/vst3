@@ -69,7 +69,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout EntangleAudioProcessor::make
     layout.add(
         std::make_unique<juce::AudioParameterFloat>(
             juce::ParameterID{blendParameterId, 1}, "Blend",
-            juce::NormalisableRange<float>{-1.0f, 1.0f, blendStep}, 0.0f),
+            juce::NormalisableRange<float>{0.0f, 1.0f, blendStep}, blendDefaultQ),
         std::make_unique<juce::AudioParameterChoice>(
             juce::ParameterID{hopParameterId, 1}, "Hop size", hopNames, defaultHopIndex,
             juce::AudioParameterChoiceAttributes().withAutomatable(false)),

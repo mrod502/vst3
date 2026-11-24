@@ -37,17 +37,9 @@ public:
     static const inline juce::String normalisationAmountParameterId { "normalisationAmount" };
     static const inline juce::String silenceFloorParameterId { "silenceFloor" };
 
-    /** The blend dial's quantum, dyadic so that every position on it is exactly representable.
-
-        It replaces the 0.01 the parameter shipped with, for a measured reason. JUCE snaps a float
-        parameter to `start + interval * floor ((v - start) / interval + 0.5)`, so with 0.01 the
-        default becomes -1 + 0.01f * 100, which this Release build folds into a single FMA and
-        returns as -2.23517418e-08 rather than 0 — measured 2026-10-29 on the shell's own held value,
-        and visible as 9.26e-09 of dry A in the §5.1 render that is supposed to be pure convolution.
-        A p that stops short of 1.0 also never reaches the law's endpoint snap, so +1 keeps 7.05e-08
-        of the wet stream instead of being bit-exact. A power of two makes that arithmetic exact in
-        every evaluation order; 1/128 is the dyadic step nearest the one it replaces, and finer, so
-        no dial position the old grid could reach is lost. */
+    /** The blend dial's quantum, dyadic so every position of [0, 1] denotes exactly — endpoints included,
+        which is what lets `effectiveBlend` hand the law exactly -1 and 0 and reach its endpoint snaps
+        (F-010's measurement, on the range D-038 replaced). */
     static constexpr float blendStep = 1.0f / 128.0f;
 
     /** Output gain in dB with 0 dB at exactly unity.
@@ -208,13 +200,17 @@ public:
     /** The choice parameter as the host set it, before the clamp moved it. */
     int requestedGrainLengthSamples() const;
 
-    /** The dial position that actually runs, after the no-sidechain pin of D-011. The editor
-        reports this rather than the blend parameter, because with no sidechain bus the plugin runs
-        pure A whatever the dial says and a control that lies about what is running is worse than no
-        control. */
+    /** The dial's domain and default (D-038): q = 0 is dry A, q = 1 is the convolution. One constant,
+        so the layout and the missing-parameter fallback below can never disagree about the default. */
+    static constexpr float blendDefaultQ = 1.0f;
+
+    /** The law position that actually runs, after the no-sidechain pin of D-011 — q in [0, 1] shifted by
+        `effectiveBlend`. The editor reports this rather than the blend parameter, because with no
+        sidechain bus the plugin runs pure A whatever the dial says (src/Entangle/AGENTS.md). */
     float effectiveBlendPosition() const noexcept
     {
-        return entangle::effectiveBlend (rawParameter (blendParameterId, 0.0f), sidechainActive);
+        return entangle::effectiveBlend (rawParameter (blendParameterId, blendDefaultQ),
+                                         sidechainActive);
     }
 
     /** One line naming the configuration the last real prepare built, for a human in a host to read and

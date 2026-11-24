@@ -140,6 +140,10 @@ constexpr double kWindowScale = 1190.0 / 315.0;
 const juce::Rectangle<int> kBarBounds {0, 0, 264, 67};
 const juce::Rectangle<int> kFaceBounds {0, 0, 209, 218};
 
+/* The room a bar's label is laid in — the column the skin carves off the track, asked of the light half so
+   the reference and the widget cannot drift apart in the middle of a cost comparison. */
+const int kLabelColumn = ui::BarGeometry::labelColumnAt (kWindowScale);
+
 class Kit
 {
 public:
@@ -181,7 +185,8 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        theme.drawCapAlignedText (g, text, role, ui::Theme::fontScaleFor (kWindowScale), {0, 0}, layout);
+        theme.drawCapAlignedText (g, text, role, ui::Theme::fontScaleFor (kWindowScale), {0, 0},
+                                 getWidth(), layout);
     }
 
     ui::Theme& theme;
@@ -213,9 +218,9 @@ public:
         g.fillRect (getLocalBounds().withWidth (132).reduced (0, 3));
         g.setColour (ink);
         theme.drawCapAlignedText (g, valueText, ui::TypeRole::barValue, ui::Theme::fontScaleFor (kWindowScale),
-                                  {4, 0}, juce::Justification::left);
+                                  {4, 0}, getWidth() - 4, juce::Justification::left);
         theme.drawCapAlignedText (g, labelText, ui::TypeRole::barLabel, ui::Theme::fontScaleFor (kWindowScale),
-                                  {0, 0}, juce::Justification::left);
+                                  {0, 0}, kLabelColumn, juce::Justification::left);
     }
 
     ui::Theme& theme;

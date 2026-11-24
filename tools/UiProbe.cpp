@@ -376,6 +376,95 @@ TEST_CASE ("ui: probe: the bar paints the measured body, inset and fill")
     }
 }
 
+/* The fit pass widens the label column past the rule's figure when the words ask (01 C6); the bar paints from
+   the theme's number and the pointer maps from the layout cached on the last resize. Every other leg here runs
+   with the rule's figure, where the two coincide — so only a widened column can show one following and not. */
+TEST_CASE ("ui: probe: a column widened for the words moves the body, the fill and the click together")
+{
+    Kit kit;
+    const int rule = ui::BarGeometry::labelColumnAt (kWindowScale);
+    const int widened = rule + 7;
+    const int bodyHeight = ui::BarGeometry::bodyHeightAt (kWindowScale);
+    const auto cell = juce::Rectangle<int> {40, 60, 264, bodyHeight};
+
+    kit.theme.setLabelColumnPx (widened);
+
+    ClickableBar bar {"level"};
+    bar.setRange (0.0, 1.0, 0.0);
+    bar.setLabelWords ("Bypass");
+    bar.setBounds (cell);
+    bar.setValue (0.5, juce::dontSendNotification);
+
+    juce::Image image = sheet();
+    render (image, bar);
+
+    SECTION ("the body the bar paints from is the widened column's answer")
+    {
+        CHECK (bar.body().getX() == widened);
+        CHECK (bar.body().getWidth() == cell.getWidth() - widened);
+        CHECK (boundsOf (image, ui::kFill).getX() == cell.getX() + widened);
+    }
+
+    SECTION ("the region the pointer maps is the rect the bar paints")
+    {
+        CHECK (kit.theme.getSliderLayout (bar).sliderBounds == bar.body());
+    }
+
+    SECTION ("the value the pointer lands on is that body's proportion")
+    {
+        const int centre = widened + (cell.getWidth() - widened) / 2;
+        bar.mouseDown (makeEvent (bar, {centre, bodyHeight / 2}, false));
+
+        const double across = static_cast<double> (centre - widened)
+                              / static_cast<double> (cell.getWidth() - widened);
+        const double ruleCarve = static_cast<double> (centre - rule) / static_cast<double> (cell.getWidth() - rule);
+
+        INFO ("click at x=" << centre << " of a body from " << widened << " gave " << bar.getValue());
+        CHECK (bar.getValue() == Catch::Approx (across).margin (1e-9));
+        CHECK (ruleCarve - across > 0.005);
+    }
+}
+
+/* A rotated line's room is `RotatedPlacement::extentPx`, the cell less its inset at both ends — not the height.
+   With no deficit the two draw the same pixels, so the leg plants the case the fit rule forbids: a run between
+   the extent and the height. The real room wraps it inside the extent; the height lays it over the bottom inset. */
+TEST_CASE ("ui: probe: a rotated line is laid inside the extent, not the component's height")
+{
+    Kit kit;
+    const int inset = ui::rotatedCaptionInsetAt (kWindowScale);
+    const float fontScale = ui::Theme::fontScaleFor (kWindowScale);
+    const juce::String words {"Waveform Vibes"};
+    const double advance = kit.theme.measureText (words, ui::TypeRole::rotatedCaption, fontScale).extent.advancePx;
+
+    const int cellLength = static_cast<int> (advance) + 1 + inset;
+    const auto cell = juce::Rectangle<int> {40, 20, 80, cellLength};
+    const auto placed = ui::rotatedPlacementFor ({0, 0, cell.getWidth(), cell.getHeight()}, kWindowScale);
+
+    REQUIRE (inset >= 2);
+    REQUIRE (placed.extentPx < advance);
+    REQUIRE (advance <= cellLength);
+    REQUIRE (kit.theme.measureText ("Waveform", ui::TypeRole::rotatedCaption, fontScale).extent.advancePx
+             < placed.extentPx);
+    REQUIRE (kit.theme.measureText ("Vibes", ui::TypeRole::rotatedCaption, fontScale).extent.advancePx
+             < placed.extentPx);
+
+    ui::Text line {"waveformCaption", words, ui::TypeRole::rotatedCaption, ui::TextAlignment::left,
+                   ui::TextSurface::tinted};
+    line.setOrientation (ui::TextOrientation::rotated);
+    line.setBounds (cell);
+
+    juce::Image image = sheet();
+    render (image, line);
+    const auto ink = boundsOf (image, ui::wordToken (ui::TextSurface::tinted));
+
+    INFO ("advance " << advance << " px in a cell " << cellLength << " px long with extent " << placed.extentPx
+                     << "; ink y " << ink.getY() << " to " << ink.getBottom() << ", height " << ink.getHeight());
+    REQUIRE (ink.getHeight() > 20);
+    CHECK (ink.getHeight() <= placed.extentPx + 1);
+    CHECK (ink.getY() >= cell.getY() + inset - 1);
+    CHECK (ink.getBottom() <= cell.getBottom() - inset + 1);
+}
+
 TEST_CASE ("ui: probe: no thumb, no outline, anywhere in the body")
 {
     Kit kit;

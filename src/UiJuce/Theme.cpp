@@ -4,8 +4,10 @@
 #include "FontFactory.hpp"
 #include "PieDial.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <utility>
 
 namespace ui
@@ -58,17 +60,20 @@ void drawBarWords (Theme& theme, juce::Graphics& g, const juce::Slider& slider, 
     const float rampScale = Theme::fontScaleFor (k);
     g.setColour (toColour (wordToken (TextSurface::tinted)));
 
+    /* The label's room is the column the layout carved — which is `body.x`, the distance from the widget's
+       own left edge to where the track starts. One number, so the words, the body and the drag region
+       cannot disagree. */
+    if (! bar->labelWords ().isEmpty ())
+        theme.drawCapAlignedText (g, bar->labelWords (), TypeRole::barLabel, rampScale,
+                                  {slider.getLocalBounds ().getX (), geometry.body.y},
+                                  geometry.body.x, juce::Justification::left);
+
     if (! bar->valueWords ().isEmpty ())
     {
         const Rect words = geometry.valueTextRect (k);
         theme.drawCapAlignedText (g, bar->valueWords (), TypeRole::barValue, rampScale,
-                                  {words.x, words.y}, juce::Justification::left);
+                                  {words.x, words.y}, words.w, juce::Justification::left);
     }
-
-    if (! bar->labelWords ().isEmpty ())
-        theme.drawCapAlignedText (g, bar->labelWords (), TypeRole::barLabel, rampScale,
-                                  {slider.getLocalBounds ().getX (), geometry.body.y},
-                                  juce::Justification::left);
 }
 
 /** The geometry for the bounds a paint hook was handed. The fill is driven by the slider's own position in
@@ -210,16 +215,153 @@ void Theme::prepareFontsFor(float k)
         (void) entryFor(role, k);
 }
 
+void Theme::layoutRun (juce::GlyphArrangement& into, const Entry& entry, const juce::String& text,
+                       double left, double baselineFirstLine, int maxWidthPx,
+                       juce::Justification horizontal, double& advanceOut, int& lineCountOut)
+{
+    /* One shaping pass for the whole run. Breaking it into per-line `addLineOfText` calls would shape
+       once per line, which is more allocation than `drawMultiLineText` does, and the kit's paint path is
+       measured against exactly that (criterion 10). Everything below moves glyphs the shaper already
+       produced: digits to the role's pitch, a line that would pass the box down one em at its last space,
+       and the finished line across to wherever the justification wanted it. */
+    into.clear();
+    into.addLineOfText (entry.font, text, 0.0f, 0.0f);
+
+    const int limit = juce::jmax (1, maxWidthPx);
+    const double linePitch = entry.font.getHeight ();
+    const int glyphCount = into.getNumGlyphs ();
+
+    double penX = left;
+    double widest = 0.0;
+    int line = 0;
+    int lineStart = 0;
+    int breakAt = -1;
+    double penAtBreak = left;
+
+    const auto justifyLine = [left, limit, horizontal, &into] (int start, int count, double width)
+    {
+        if (count <= 0 || horizontal.getOnlyHorizontalFlags() == juce::Justification::left)
+            return;
+
+        const double slack = static_cast<double> (limit) - width;
+        const double offset = horizontal.getOnlyHorizontalFlags() & juce::Justification::horizontallyCentred
+                                ? slack * 0.5
+                                : slack;
+
+        if (offset != 0.0)
+            into.moveRangeOfGlyphs (start, count, static_cast<float> (offset), 0.0f);
+    };
+
+    for (int i = 0; i < glyphCount; ++i)
+    {
+        juce::PositionedGlyph& glyph = into.getGlyph (i);
+        const double natural = glyph.getRight() - glyph.getLeft();
+        const double advance = ui::isFixedPitchCharacter (glyph.getCharacter())
+                                 ? static_cast<double> (entry.digitPitch)
+                                 : natural;
+
+        if (i > lineStart && penX + advance > left + limit && breakAt >= lineStart)
+        {
+            const double width = penAtBreak - left;
+            widest = std::max (widest, width);
+            justifyLine (lineStart, breakAt - lineStart + 1, width);
+
+            const int moved = i - (breakAt + 1);
+            if (moved > 0)
+                into.moveRangeOfGlyphs (breakAt + 1, moved, static_cast<float> (left - penAtBreak),
+                                        static_cast<float> (linePitch));
+
+            ++line;
+            lineStart = breakAt + 1;
+            penX = left;
+            breakAt = -1;
+        }
+
+        glyph.moveBy (static_cast<float> (penX - glyph.getLeft ()),
+                      static_cast<float> (baselineFirstLine + line * linePitch - glyph.getBaselineY ()));
+
+        penX += advance;
+
+        if (glyph.isWhitespace ())
+        {
+            breakAt = i;
+            penAtBreak = penX;
+        }
+    }
+
+    widest = std::max (widest, penX - left);
+    justifyLine (lineStart, glyphCount - lineStart, penX - left);
+
+    advanceOut = widest;
+    lineCountOut = line + 1;
+}
+
+Theme::MeasuredRun Theme::measureText (const juce::String& text, TypeRole role, float k)
+{
+    return measureRun (text, role, k, std::numeric_limits<int>::max ());
+}
+
+Theme::MeasuredRun Theme::measureRun (const juce::String& text, TypeRole role, float k, int maxWidthPx)
+{
+    for (const std::optional<MeasureEntry>& slot : measureCache)
+        if (slot.has_value() && slot->role == role && slot->k == k && slot->text == text
+            && slot->maxWidthPx == maxWidthPx)
+            return slot->run;
+
+    ++measures;
+
+    const Entry& entry = entryFor (role, k);
+    MeasuredRun run;
+    run.lineHeightPx = entry.font.getHeight ();
+
+    double advance = 0.0;
+    int lines = 1;
+    layoutRun (scratch, entry, text, 0.0, 0.0, maxWidthPx,
+               juce::Justification::left, advance, lines);
+
+    run.extent.advancePx = advance;
+    run.lineCount = lines;
+    run.extent.hasBreakPoint = text.containsChar (' ');
+
+    for (int i = 0; i < scratch.getNumGlyphs(); ++i)
+    {
+        const juce::PositionedGlyph& glyph = scratch.getGlyph (i);
+        if (glyph.isWhitespace ())
+            continue;
+
+        juce::Path outline;
+        scratch.getGlyph (i).createPath (outline);
+        const juce::Rectangle<float> bounds = outline.getBounds();
+
+        if (! bounds.isEmpty())
+        {
+            const double baselineY = glyph.getBaselineY();
+            run.extent.capPx = std::max (run.extent.capPx, baselineY - static_cast<double> (bounds.getY()));
+            run.extent.descentPx = std::max (run.extent.descentPx,
+                                             static_cast<double> (bounds.getBottom()) - baselineY);
+        }
+    }
+
+    MeasureEntry built{text, role, k, maxWidthPx, run};
+    const std::size_t victim = nextMeasureSlot < kMeasureSlots ? nextMeasureSlot++ : 0;
+    measureCache[victim] = built;
+    return run;
+}
+
 void Theme::drawCapAlignedText(juce::Graphics& g, const juce::String& text, TypeRole role, float k,
-                               juce::Point<int> capTop, juce::Justification horizontalLayout)
+                               juce::Point<int> capTop, int maxWidthPx,
+                               juce::Justification horizontalLayout)
 {
     const Entry& entry = entryFor(role, k);
-    const int baseline = capTop.getY() + static_cast<int>(std::lround(entry.capHeight));
-    const int width = juce::jmax(1, g.getClipBounds().getRight() - capTop.getX());
+    const double baseline = static_cast<double> (capTop.getY()) + entry.capHeight;
+
+    double advance = 0.0;
+    int lines = 1;
+    layoutRun (scratch, entry, text, static_cast<double> (capTop.getX()), baseline, maxWidthPx,
+               horizontalLayout, advance, lines);
 
     g.setFont(entry.font);
-    g.drawMultiLineText(text, capTop.getX(), baseline, width,
-                        horizontalLayout.getOnlyHorizontalFlags());
+    scratch.draw (g);
 }
 
 float Theme::capHeightOf (TypeRole role, float k)
@@ -275,7 +417,7 @@ juce::Slider::SliderLayout Theme::getSliderLayout (juce::Slider& slider)
     auto trackRegion = slider.getLocalBounds ();
 
     if (const auto* bar = dynamic_cast<const Bar*> (&slider); bar != nullptr && ! bar->labelWords ().isEmpty ())
-        trackRegion.removeFromLeft (BarGeometry::labelColumnAt (kitScale));
+        trackRegion.removeFromLeft (labelColumnPx (kitScale));
 
     return {trackRegion, {}};
 }
@@ -385,8 +527,17 @@ const Theme::Entry& Theme::entryFor(TypeRole role, float k)
             return *slot;
 
     ++builds;
-    Entry built{role, k, makeFont(role, k), 0.0f};
+    Entry built{role, k, makeFont(role, k), 0.0f, 0.0f};
     built.capHeight = capHeightFor(built.font);
+
+    /* The widest digit at this role's size and squeeze is the pitch every digit takes, so a readout that
+       changes value keeps its width — measured once here, because the paint must shape nothing. And with
+       charToString: the int constructor formats the codepoint, so a pitch measured off "48" is twice too wide. */
+    for (int digit = 0; digit < 10; ++digit)
+        built.digitPitch = std::max (built.digitPitch,
+                                     juce::GlyphArrangement::getStringWidth (
+                                         built.font, juce::String::charToString (
+                                             static_cast<juce::juce_wchar> ('0' + digit))));
 
     const std::size_t victim = nextSlot < kCacheSlots ? nextSlot++ : 0;
     fontCache[victim] = built;

@@ -83,6 +83,19 @@ float parameterValue(juce::AudioProcessor &processor, const juce::String &parame
 bool applyLayout(juce::AudioProcessor &processor, const BusSetup &bus);
 bool configure(juce::AudioProcessor &processor, const BusSetup &bus, const Shape &shape);
 
+/** Writes the blend dial in the host's domain, q in [0, 1], and refuses anything else (D-038).
+    Every p < 0 is out of range and p = 0 is q = 1, the same sounding position, so a leg that still holds a
+    law position cannot slip a stale value in as a legal dial position and be silently clamped. */
+inline bool setBlendDial(juce::AudioProcessor &processor, float dialQ)
+{
+    if (dialQ < 0.0f || dialQ > 1.0f)
+    {
+        std::cout << "  FAIL blend dial " << dialQ << " is outside the host domain [0, 1] (D-038)\n";
+        return false;
+    }
+    return setFloat(processor, EntangleAudioProcessor::blendParameterId, dialQ);
+}
+
 template <typename Parameter, typename Value>
 bool setParameter(juce::AudioProcessor &processor, const juce::String &parameterId, Value value,
                   const char *kind)
@@ -97,10 +110,12 @@ bool setParameter(juce::AudioProcessor &processor, const juce::String &parameter
     return true;
 }
 
-/** The three parameters the shell reads on every callback, as a reference render should run them. */
+/** The three parameters the shell reads on every callback, as a reference render should run them. `dial`
+    is the host-facing q in [0, 1] — 0 dry A, 1 the convolution — not the law's p; `effectiveBlend` is the
+    one place it becomes p (D-038). */
 struct MixSetting
 {
-    float dial = 0.0f;
+    float dial = 1.0f;
     float gainDb = 0.0f;
     bool bypass = false;
     /** The level stage's two controls, at the shell's own defaults so a leg that says nothing about
@@ -127,7 +142,8 @@ Stream renderPureWet(const Shape &shape, const Stream &a, const Stream &b, int c
 
 Stream shapedBySafetyStages(const Stream &raw, float gainDb, bool blockDc, bool clip);
 
-/** The dial state every routing leg runs: p = 0, 0 dB, bypass off, the level stage parked at amount 0.
+/** The dial state every routing leg runs: q = 1 (pure convolution), 0 dB, bypass off, the level stage
+    parked at amount 0.
 
     Lifted out of §5.20 by M5 item 02 along with the cell table below: a leg that says nothing about the level
     stage runs what ships, and what ships is not linear in B. Parking it makes the wet path linear, which is

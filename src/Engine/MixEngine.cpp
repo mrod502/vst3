@@ -59,7 +59,6 @@ void MixEngine::prepare(const EngineConfig& configToUse)
 
     const std::size_t hop = static_cast<std::size_t>(config.hop);
     coefA.assign(hop, 0.0f);
-    coefB.assign(hop, 0.0f);
     coefWet.assign(hop, 0.0f);
 
     /* The publication's position restarts with the transport: the ring above the seam is rebuilt at the
@@ -77,7 +76,6 @@ void MixEngine::snapRamps() noexcept
     blendRamp.snap();
     gainRamp.snap();
     bypassRamp.snap();
-    previousBlend = blendRamp.value;
 }
 
 void MixEngine::reset()
@@ -142,22 +140,14 @@ void MixEngine::fillCoefficients() noexcept
 
     for (std::size_t i = 0; i < hop; ++i)
     {
-        const float rawBlend = blendRamp.step();
-
-        /* The dry bus follows the sign of p, so a travel from -1 to +1 hands over somewhere; landing exactly on
-           p = 0 makes it silent, since w_dry(0) == 0 drops no outgoing sample and picks up no incoming one
-           early. The sign is tracked on the un-snapped value, or the next sample looks like another crossing. */
-        const bool crossed = (previousBlend < 0.0f) != (rawBlend < 0.0f);
-        previousBlend = rawBlend;
-        const float p = crossed ? 0.0f : rawBlend;
-
-        const MixWeights weights = mixLawWeights(p);
+        /* p is confined to [-1, 0] by the shell (D-038), so no dry-bus selection is left here: `dryToA`
+           was 1 wherever `weights.dry` was non-zero, which makes folding it out exact and the dropped
+           `coefB` term exactly 0.0f at every reachable position. */
+        const MixWeights weights = mixLawWeights(blendRamp.step());
         const float gain = gainRamp.step();
         const float beta = bypassRamp.step();
-        const float dryToA = p < 0.0f ? 1.0f : 0.0f;
 
-        coefA[i] = gain * (beta * weights.dry * dryToA + (1.0f - beta));
-        coefB[i] = gain * (beta * weights.dry * (1.0f - dryToA));
+        coefA[i] = gain * (beta * weights.dry + (1.0f - beta));
         coefWet[i] = gain * (beta * weights.wet);
     }
 }
@@ -172,8 +162,8 @@ void MixEngine::processHop(const float* const* a, const float* const* b, float* 
        the read-then-write below need no third buffer. */
     inner->processHop(a, b, scratchPtrs.data(), numChannels);
 
-    /* Decision C's first stage: the convolved stream only. A and B reach the sum unfiltered, which
-       is what keeps D-010's bit-exact dial endpoints exact. */
+    /* Decision C's first stage: the convolved stream only. A reaches the sum unfiltered, which is what
+       keeps D-010's bit-exact dial endpoints exact. */
     const std::size_t hop = static_cast<std::size_t>(config.hop);
     if (wetBlocker != nullptr)
     {
@@ -182,9 +172,9 @@ void MixEngine::processHop(const float* const* a, const float* const* b, float* 
                                        scratchPtrs[static_cast<std::size_t>(channel)], hop);
     }
 
-    /* Then the level stage, on the blocked stream and before the law: after the blocker, so DC cannot inflate
-       the reading it corrects for, and before the sum, so `coefWet`'s exact zero at |p| = 1 still hands through
-       the dry bus. It reads A and B inside the hop seam, where Engine's contract guarantees `out` is unaliased. */
+    /* Then the level stage, on the blocked stream and before the law: after the blocker, so DC cannot
+       inflate the reading it corrects for, and before the sum, so `coefWet`'s exact zero at p = -1 still
+       delivers dry A untouched. It reads A and B inside the hop seam, where `out` is unaliased. */
     if (levelNormalizer != nullptr)
     {
         for (int channel = 0; channel < numChannels; ++channel)
@@ -198,8 +188,7 @@ void MixEngine::processHop(const float* const* a, const float* const* b, float* 
     {
         const float* const wet = scratchPtrs[static_cast<std::size_t>(channel)];
         for (std::size_t i = 0; i < hop; ++i)
-            out[channel][i] = coefA[i] * a[channel][i] + coefB[i] * b[channel][i]
-                              + coefWet[i] * wet[i];
+            out[channel][i] = coefA[i] * a[channel][i] + coefWet[i] * wet[i];
     }
 
     /* And the second one, after the gain folded into the coefficients: this is the last thing the

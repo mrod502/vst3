@@ -61,19 +61,21 @@ void Text::paint (juce::Graphics& g)
         g.addTransform (juce::AffineTransform::rotation (static_cast<float> (kRotationRadians),
                                                          pivotX, pivotY));
 
+        /* `extentPx`, not the component's height: the room a rotated line has is the cell less its own
+           inset on both ends, which is the number `TextGeometry` computes and this used to ignore — the
+           difference is the last glyph of "Waveform", cut at the cell's top edge. */
         theme->drawCapAlignedText (g, getText(), textRole, rampScale,
                                    {static_cast<int> (placed.pivot.x), static_cast<int> (placed.pivot.y)},
-                                   juce::Justification::left);
+                                   placed.extentPx, juce::Justification::left);
         return;
     }
 
-    /* The justification goes to the skin's helper, which lays the line out from capTop.x to the right edge of
-       the current clip: measuring the string here would put an allocation in paint(), and a centred or
-       right-aligned word is justified against the clip, not against a private measurement of itself. */
+    /* The box the placer gave this component is the layout width — not the clip, and not a private
+       measurement of the string, either of which is how a word loses the end of itself. */
     const auto layout = horizontalAlignment == TextAlignment::right    ? juce::Justification::right
                         : horizontalAlignment == TextAlignment::centre ? juce::Justification::horizontallyCentred
                                                                        : juce::Justification::left;
 
-    theme->drawCapAlignedText (g, getText(), textRole, rampScale, {box.x, box.y}, layout);
+    theme->drawCapAlignedText (g, getText(), textRole, rampScale, {box.x, box.y}, box.w, layout);
 }
 }

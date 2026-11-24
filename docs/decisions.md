@@ -13,11 +13,11 @@ superseded rule is not restated: the surviving rule says what applies, and the S
 | D-004 | Latency policy: scheduler pre-fill | Accepted (M1) |
 | D-005 | Test framework: pinned Catch2, own target | Accepted (M1) |
 | D-006 | Transform backend: `IFft` + calibrated JUCE adapter | Accepted (M2); both engines measured |
-| D-007 | Every build tree lives in `build/<config>` | Accepted (M2) |
+| D-007 | A build tree is `$(BUILD_ROOT)/<config>`, `build/<config>` on the host | Accepted (M2); container location moved by D-028 |
 | D-008 | Grain-length set, the (L, H) bounds, measured cost | Accepted (M2) |
 | D-009 | Interim unity dry + wet sum | Superseded by D-010; peak figures live |
-| D-010 | The mix law: equal power, endpoint snapping, unity, the pin | Accepted (M3) |
-| D-011 | Parameters and the sample-domain ramp | Accepted (M3) |
+| D-010 | The mix law: equal power, endpoint snapping, unity, the pin | Accepted (M3); dry bus and dial domain amended by D-038 |
+| D-011 | Parameters and the sample-domain ramp | Accepted (M3); blend's range and default amended by D-038 |
 | D-012 | Output safety stage: memoryless tanh, knee 0 dBFS, +6 dB | Accepted (M3) |
 | D-013 | DC blocker on the convolved path: 5 Hz Butterworth, wet only | Accepted (M3) |
 | D-014 | Level detector: measurement only, two-stage envelope | Accepted (M3); class and figures stand |
@@ -31,8 +31,13 @@ superseded rule is not restated: the surviving rule says what applies, and the S
 | D-022 | Prepare-time sizing: named floor, seven-field key, measured footprint | Accepted (M4); measured |
 | D-023 | The layout report: one line naming what the plugin was told | Accepted (M4); host rows still open |
 | D-024 | Five colour tokens, seven type roles, states by ink or geometry | Accepted (M10); measured |
-| D-025 | Helvetica Neue embedded; no family name in the product | Accepted (M10); licence and packaging open |
+| D-025 | The design's own face ships embedded; no family name in the product | Accepted (M10), amended M11 — face identity now D-037 |
 | D-026 | The editor is resizable; the sheet scales as one sheet | Accepted (M10); measured |
+| D-027 | Display publication: an SPSC ring injected at the engine seam | Accepted (M10); measured |
+| D-028 | The container's build volume mounts outside the export | Accepted (M10); fixes F-028 |
+| D-031 | Text fits by measured deficit: widen, squeeze or reword, per word | Accepted (M11); user rulings; closes A-1 |
+| D-037 | Clash Display vendored under the FFL; ramp re-fit to the old cap | Accepted (M11); licence read, not answered by ITF |
+| D-038 | Blend on `[0, 1]`: 0 dry A, 1 the convolution; dry B out of the sum; the datum off the sheet | Accepted (M11); measured, 16 arms run |
 | F-001 | JUCE 9 latency plumbing | Finding |
 | F-002 | `/tmp` was noexec and broke juceaide | Fixed; the `o:` caveat stands |
 | F-003 | JUCE real-only FFT: per-engine scaling, locking fallback | Finding |
@@ -57,6 +62,14 @@ superseded rule is not restated: the surviving rule says what applies, and the S
 | F-022 | `LookAndFeel_V4`'s nine slots; JUCE 9 resolves no typeface for a named family | Finding; font half ended by D-025 |
 | F-023 | JUCE 9 paint hooks are on the widget; the rasteriser allocates in every paint | Finding |
 | F-024 | Installing the design's own face moved four layout metrics | Finding |
+| F-025 | Widget-before-attachment reads 0.0; a peerless repaint never paints | Finding |
+| F-026 | Two display legs pass without their guard: the ring's mid-copy tag, the shell's frozen window | Finding |
+| F-027 | A header-writing `operator new` shim aborts under Mach-O; the byte legs are Linux-only | Fixed same day; five pass-through shims unaffected |
+| F-028 | A mountpoint inside the export carries `deny delete`, so the host cannot `rm build/` | Fixed by D-028 |
+| F-030 | A contemporary family under JUCE: the name pair, no `tnum`, the line box is not the em | Finding; from D-037 |
+| F-031 | Four UI legs gated box positions and printed a verdict on the words | Finding; closed by D-031 |
+| F-032 | A quantum guard that reads a parameter through its own constant sees nothing | Finding; from D-038 |
+| F-033 | A Bundle-only generator expression in POST_BUILD stops the project configuring on Linux | Finding; guarded `if(APPLE)` |
 
 ---
 
@@ -161,22 +174,21 @@ identity comes from the closed engine list, never from the gain; `RTLD_NOLOAD` r
 Accelerate reports "no" even where vDSP is the engine; `ctest --output-on-failure` prints nothing for a passing
 test, so read a gain by running the program directly or with `-V`.
 
-## D-007 — Every build tree lives in `build/<config>` at the repo root
+## D-007 — A build tree is `$(BUILD_ROOT)/<config>`, `build/<config>` on the host
 
-**Status:** Accepted (M2).
+**Status:** Accepted (M2); the container's location moved to D-028.
 
-**Decision.** `build/debug` and `build/release` are the only build-tree locations, always spelled relative to the
-repo root. The container mounts `.:/workspace` and shields exactly that name; a tree configured elsewhere reaches
-the host through the bind mount carrying the container's numeric uid, Docker passes uid/gid through numerically, and
-one root-owned directory the host cannot unlink aborts everything under it. `cmd/install [debug|release]` owns the
-directory→`CMAKE_BUILD_TYPE` mapping; `make` exposes `BUILD_TYPE` (default `Release`).
+**Decision.** One spelling, `$(BUILD_ROOT)/<config>`, defaulting to the repo-relative `build/<config>` — so
+`build/debug` and `build/release` on the host. `cmd/install [debug|release]` owns the directory→`CMAKE_BUILD_TYPE`
+mapping; `make` exposes `BUILD_TYPE` (default `Release`) and `BUILD_ROOT`. Docker passes uid/gid through numerically,
+so a tree the container writes inside `/workspace` lands on the host at the container's numeric uid — which is why the
+container never runs with the default root (D-028).
 
-**Consequence.** The shielded name is a named volume, so a host `build/` and the container's `/workspace/build` are
-two trees under one name — cleaning one leaves the other; a container tree goes with
-`docker compose exec vst3-dev rm -rf /workspace/build/<config>`. `configure_file` stays one bind-mount write by
-design (`src/Entangle/Entangle.h` is generated into the source tree and tracked; one file is not the hazard).
+**Consequence.** A host `build/release` and the container's `/ct/build/release` are two trees under one command;
+cleaning one leaves the other. `configure_file` stays one bind-mount write by design
+(`src/Entangle/Entangle.h` is generated into the source tree and tracked; one file is not the hazard).
 
-**Revisit trigger:** a build tree that must live outside `build/` needs its own volume mount, not the bind mount.
+**Revisit trigger:** a third tree location needs its own named variable, not a second path convention.
 
 ## D-008 — Grain-length set, the bounds on the (L, H) pair, and its measured cost
 
@@ -252,9 +264,11 @@ that cannot offer a second bus — and the interim sum keeps that configuration 
 **Revisit trigger.** The mix law (D-010, landed). Earlier if a host reports clipping where the passthrough did not
 clip — expected on the figures above, which is why they are recorded.
 
-## D-010 — The mix law: equal-power blend, dry B, endpoint snapping, unity, and the no-sidechain pin
+## D-010 — The mix law: equal-power blend, endpoint snapping, unity, and the no-sidechain pin
 
-**Status:** Accepted (M3).
+**Status:** Accepted (M3). Amended by **D-038**: the dial addresses `p ∈ [-1, 0]`, so the dry weight always applies
+to A and the `p > 0` rows below are the law's own arithmetic, not a state the product can reach. The equal-power
+curve, the three snapped rows, unity and the pin are unchanged.
 
 **Decision.** Equal power, snapped at three positions, at unity:
 
@@ -279,27 +293,33 @@ onto A).
   `conv × −4.37e-08` in a sum that must be bit-exact at the endpoints; without snapping every endpoint leg goes red
   at both ±0.4 and full scale and in both the independent and the `A == B` pairing — what decides it is the size of
   the *sample* the residue lands on, not the level of the render. Snapping costs three comparisons once per hop.
-- **The dry bus swaps only at `p = 0`**, where `w_dry == 0`, so the hand-over drops no sample of the outgoing bus and
-  takes no early sample of the incoming one. The sign is tracked on the raw ramp value before the crossing snap, or
-  the sample after the landing reads as a second crossing and pins the dial at zero.
+- **There is no dry-bus hand-over** (D-038). The dry weight applies to A at every position the shell can ask for, so
+  there is no crossing left to make silent. The sign-crossing snap this stage carried was not a neutral guard: it
+  forced `p` to `0` for the sample after a crossing, which zeroes the dry contribution for that one sample — and it
+  fired on the first hop after `prepare` too, because the ramp snaps while the sign tracker still holds the class's
+  initial `0`. Re-running the pre-D-038 fill (M11 `02` arm 2) reddened the bit-exact dry legs at the first sample
+  after `R`, so removing it changes bytes for the better rather than changing nothing.
 - **Unity, no trim.** The dial's cost at the default configuration, reported rather than gated: peak **1.68**
-  independent / **2.54** with `A == B` at ±0.4 input, **10.51** and **15.86** at full scale, worst at the centre —
-  pure convolution — where the correlated case sits ~0.5 dB above the independent one across the middle of the sweep.
+  independent / **2.54** with `A == B` at ±0.4 input, **10.51** and **15.86** at full scale, worst at `p = 0` —
+  pure convolution, which D-038 moved to the top of the dial — where the correlated case sits ~0.5 dB above the
+  independent one across the middle of the sweep.
   So the soft clipper (D-012) is engaged at default settings and a ±2 dB output-flatness target is unreachable at
   unity, because A and conv are partially correlated.
 - **The law adds no gain and no delay to the wet path.** The engine's 1/C remains the whole wet gain table; the
   `L − R` offset between dry and wet is D-004's, not this law's to close.
 - **With the sidechain bus disabled the effective `p` is −1**, whatever the dial says — otherwise the plugin is silent
   at its own default on any host without a second bus. The dial keeps its value and a prepare that sees a sidechain
-  restores it, so **a preset saved at `p = 0` with a sidechain renders A in a host without one**. The editor reports
-  the effective position, not the dial's.
+  restores it, so **a preset saved at full wet renders A in a host without one** — under D-038 that is the shipped
+  default, which is why the editor states the pin in words rather than leaving a dial that means nothing. The editor
+  reports the effective position, not the dial's.
 
 **Revisit trigger.** Listening says unity is unusable — that reopens the trim, with the dial sweep as the input. The
 normalizer's target may move these levels again. If the DC blocker breaks the endpoint legs, the exactness requirement
 moves into that stage's contract.
 ## D-011 — Blend, output gain and bypass: the parameter layer and the sample-domain ramp
 
-**Status:** Accepted (M3).
+**Status:** Accepted (M3). Amended by **D-038**: the blend parameter is `[0, 1]` with default `1`. The ramp, its
+times, the read discipline and the other two parameters are unchanged.
 
 **Decision.** The ramp lives inside the stage, not the shell: `juce::SmoothedValue` would put a JUCE header into a
 JUCE-light library (AGENTS §9), and a ramp is a function of output samples, which only the class holding the sample
@@ -311,7 +331,8 @@ buffered stream and a ramp would otherwise spend its time constant replaying a g
 shell hands targets down in `processBlock`, and again in `configureRings` and in `reset()` *before*
 `scheduler.reset()` — that call is what snaps the ramps, so pushing afterwards crossfades through the first 20 ms of
 the new transport.
-- **Parameters.** Blend `[-1, 1]`, default 0, automatable, quantum `1/128` (F-010). Output gain `[-60, +12]` dB,
+- **Parameters.** Blend `[0, 1]`, default 1, automatable, quantum `1/128` — dyadic on this range as on the old one,
+  so `q`, its normalised value and `p = q − 1` all denote exactly (D-038, F-010). Output gain `[-60, +12]` dB,
   default 0, automatable, quantum `0.125` dB. Bypass bool, default false, automatable. All three are appended after the
   two choice parameters, because the choices are positional in a saved preset while the float and bool ones are looked
   up by id.
@@ -947,14 +968,18 @@ spending re-opens this entry rather than changing the token. (c) A host that can
 D-025's embedded face. (d) A resize answer needing anything other than `k` — the geometry rests on millimetres so
 that stays cheap; a second size path re-opens the grid, not this entry.
 
-## D-025 — Helvetica Neue ships inside the binary; the family name is gone from the product
+## D-025 — The design's own face ships inside the binary; the family name is gone from the product
 
-**Status:** Instructed by the user: the design's own face, non-negotiable. Implemented as
-`juce_add_binary_data(EntangleFonts)` under `src/UiJuce`, linked `PUBLIC` into `UiJuce`, read only by
-`FontFactory`.
+**Status:** Accepted (M10) as an instruction from the user — the design's own face, non-negotiable — implemented as
+`juce_add_binary_data(EntangleFonts)` under `src/UiJuce`, linked `PUBLIC` into `UiJuce`, read only by `FontFactory`.
+Amended M11: this row owns the *mechanism* — vendored bytes, the ramp as the only route to a size, no family name in
+the shell — and the shell rules that come with it. Identity, licence, weight map, byte figures and the ramp table are
+**D-037**: the M10 face (Helvetica Neue) was replaced by Clash Display. Every shell rule here survived that swap
+untouched, which is the evidence the seam sits in the right place — 48 call sites had named the old family and none
+of them moved.
 
 **Decision — the bytes, not the name.** `typefaceFor(weight)` returns a `Typeface::Ptr` built once from
-`createSystemTypefaceFor(HelveticaNeueBold_otf, HelveticaNeueBold_otfSize)` or the Thin pair, and `makeFont` hands
+`createSystemTypefaceFor(ClashDisplay_Light_otf, ClashDisplay_Light_otfSize)` or the Bold pair, and `makeFont` hands
 that pointer to `FontOptions{}.withTypeface(face)`. No `Font` in the product carries a family string, so there is
 nothing left for a host to substitute — which is the point: JUCE 9 resolves **no** typeface for a family fontconfig
 cannot match and hands back null (F-022), so a family-name request is a question the *host* answers, and off macOS
@@ -962,28 +987,36 @@ this container's answer was DejaVu Sans, leaving 18 of the mockup's 22 Thin text
 now a broken build rather than a design state: `jassert` fires and JUCE's default face keeps the process alive,
 while the skin's face leg reddens on the name.
 
-**Two faces, not sixteen.** The drop is 16 faces and 6.6 MB; the ramp declares two weights, so exactly the two it
-binds to are embedded — **Bold 609 908 B** and **Thin 301 112 B**, 911 020 B together. A third face in every bundle
-is bytes nobody renders.
+**Two faces, not sixteen.** The ramp declares two weights, so exactly the two it binds to are embedded — **Light
+27 000 B** and **Bold 25 276 B** (D-037 maps that weight pair). A third face in every bundle is bytes nobody renders.
 
-**Cost.** `libEntangleFonts.a` is 915 914 B against a standalone of 11 235 400 B — **8.8 %** of the shipped
-binary; the VST3 bundle is 11 MB. `-flto` cannot recover it: both symbols are referenced from `FontFactory`, which
-every paint reaches.
+**Cost.** `libEntangleFonts.a` is **57 170 B** against a standalone of 11 235 400 B — **0.51 %** of the shipped
+binary — where the M10 face cost 915 914 B (8.8 %). `-flto` cannot recover it: both symbols are referenced from
+`FontFactory`, which every paint reaches. Payload is therefore not an argument against a third weight (D-037).
 
-**Open: the licence.** `public/helvetica-neue-5/` arrived as 16 `.otf`/`.ttf` files and **no licence text** — no
-EULA, no README, nothing that says the family may be redistributed inside a product. Embedding a face in a shipped
-bundle *is* redistribution, so the instruction settles the design question and leaves the licensing one on the
-record: shipping requires a licensed copy of Helvetica Neue, and this entry is where that answer gets written.
+**Licence.** The vendored faces carry the **ITF Free Font License** (`public/ClashDisplay_Complete/License/FFL.txt`,
+12 734 B), read in full on 2026-11-21. Clause 01 grants use "for personal or commercial purposes, free of charge and
+for an unlimited period of time" and, in its own words, "**You may embed the Font Software in mobile or desktop
+applications and digital documents for the uses permitted under this License**" — the grant this product stands on,
+not an inference from the carve-in at the end of clause 02, which says the same thing for the Licensee's own
+applications. Clause 02 refuses modification (it names subsetting, format conversion and metadata edits) and refuses
+making the Font Software available to anyone else *as a font*. D-037 holds the clause table and the one point the text
+leaves open.
 
-**Open: packaging.** The drop is **untracked**, so a fresh clone cannot configure — `juce_add_binary_data` fails on
-the missing source file. What belongs in the repository is the two embedded faces under a path that says where they
-came from, not the whole family; that decision belongs with the licence.
+**Packaging.** The build reads the foundry's own tracked drop: `src/UiJuce/CMakeLists.txt` names
+`public/ClashDisplay_Complete/Fonts/OTF/ClashDisplay-Light.otf` and `-Bold.otf` and nothing else from the drop, so
+the italics, the other four weights, the variable file and the web formats stay out of the binary while the two it
+ships sit where they arrived, licence text beside them. Tracked since `d84784e` and `7128e9d`, so a clone already
+has both files and a second copy of the same bytes could only drift from them (ruled 2026-11-24). An M10 build
+failed at configure time on a `public/` source path and the same failure recurs the moment a listed path drifts, so
+the leg is on the list rather than the directory: every path it names is tracked (`git ls-files --error-unmatch` on
+both) and the generated `build.ninja` names the two Clash OTFs and no Helvetica one, `EntangleFonts` linking
+`libEntangleFonts.a` at 57 170 B (c18).
 
-**Revisit trigger.** (a) The licence answer. (b) A third weight: the drop carries Black, and the wordmark's drawn
-width (F-024) is the measurement that would argue for it — the ramp's weight column is the one place that changes,
-plus one more embedded face. (c) The first macOS host run, where the installed family and the embedded face can be
-compared; divergence there hints the embedded subset is the wrong subset. (d) Any bundle-size budget that makes
-911 KB material — the fallback is not the family name (that is F-022) but a smaller subset, i.e. one weight.
+**Revisit trigger.** (a) A third weight — the ramp's weight column is the one place that changes, plus one more
+embedded face; the six-weight option and its cost are D-037. (b) The first macOS host run, where the installed family
+and the embedded face can be compared; divergence there hints the embedded face is the wrong cut. (c) Any
+bundle-size budget that makes 57 KB material — the fallback is not the family name (that is F-022) but one weight.
 
 ## D-026 — The editor window is resizable, and the sheet scales as one sheet
 
@@ -1020,6 +1053,71 @@ the sheet then leaves ground below row 3, a preference queue, not a layout bug. 
 moment something on the sheet is not a function of `k`, this decision's cheapness dies with it and the grid has to
 change. (c) A need for a visible grip, which re-opens the palette rule rather than the resize rule — the grip would
 need a token of its own, and D-024 has none to spare.
+## D-027 — The display publication: an SPSC ring injected at the engine seam, never an accessor into the level stage
+
+**Status:** Answered by the user on 2026-11-18 — of `04` §0's three arms, *arm 2, an SPSC `TraceRing`*. Implemented
+in `04` tier 1.
+
+**Why a decision was needed at all.** `LevelNormalizer` already computes every figure the two panels draw
+(`gainDb(c)`, `envelopeA/B/Conv(c)`, all `const noexcept`), which is what led the spec to claim tier 1 needed no new
+seam. It needed one. The stage is a private member of the chain the shell builds, and its getters are plain doubles
+written by the hop thread: reading them from the message thread is a torn read of a four-word set *and* a cross-thread
+reach into hop state, which `../M10-impl-plan/INDEX.md` §3 rule 4 forbids without a decision entry — this one.
+
+**Decision.**
+- **The route.** `container::TraceRing<engine::TraceSnapshot>`, owned by the processor, written by `MixEngine` once
+  per hop, read by the editor on its 100 ms tick through four processor getters — `traceWindow`, `traceLatest`,
+  `traceDepth`, `traceSecondsPerHop` — and nothing else. The last exists so neither panel converts a hop into
+  seconds on its own: the time axis is the shell's, from the configuration the rings were built for.
+  The editor holds no reference into DSP state and nothing in DSP references the editor.
+- **Injected, not exposed.** `MixEngine::installTraceSink(TraceSink)` sits beside the existing
+  `installLevelNormalizer`, and a sink is a non-owning borrow of the ring. An accessor handing back the stage would
+  make every consumer below the shell responsible for knowing whether a display exists, and would put a live pointer
+  into hop state in the message thread's hands. Injection makes the engine's only act `trace.publish(snapshot)`, which
+  on an empty sink is one null test and no call. Nothing below the shell names the UI: `Engine` knows a 144-byte
+  record and a ring, never a panel.
+- **Drop the oldest.** A full ring laps its oldest unread snapshot and charges itself the drop (`dropped()`) rather
+  than refusing the new one: the newest record is the signal's current state, and a publication that loses it has
+  stopped meaning anything, while an unread old one is history the reader simply missed. Per-slot sequence tags
+  (odd = being written, even = written) keep a reader from ever delivering a record the writer was mid-overwrite on.
+- **Peek, not drain.** Both panels and the box-6 meter read the same window through `peekNewestInto`/`newest`, so
+  neither panel can starve the other and one read serves the whole tick. The display is a rolling window, not a
+  queue — a hop nobody looked at is worth nothing — which is why `Container` gained a second ring type rather than a
+  mode on `CircularBuffer`, whose contract is that a full buffer refuses the new item.
+- **Capacity.** `ui::kTraceWindowSeconds` (2.0 s) of hops at the *prepared* rate and hop, `+1` so a full window fits
+  instead of lapping itself at the exact boundary, rounded up to a power of two by the ring; sized in `prepareToPlay`
+  and `reconfigureSafely`, never grown on the step path. The shell sizes its scratch from the ring's rounded
+  `capacity()`, so a panel can never ask for history the publication cannot hold. The rounding costs up to 2× the
+  needed bytes — accepted for the mask instead of a divide.
+- **Publication also needs a stage.** `processHop` publishes only when `levelNormalizer != nullptr` *and* the sink is
+  non-empty. A chain with no level stage has no correction and no envelopes, so it publishes nothing and the panels
+  say `idle` rather than drawing zeros that would read as a held signal.
+- **Swap and teardown.** The sink is a raw borrow and is not atomic, so every rebuild is staged park → rebuild →
+  re-borrow inside the processor's `traceLock`, and the reconfigure path runs inside `suspendProcessing(true)`.
+  `releaseResources` parks the sink before it frees the ring. `traceLock` is taken by the message thread only — the
+  hop path sees either the old sink or the new one, never a half-built ring.
+- **The axis is the bound, the rule is the value.** The envelope panel's y axis spans the `silenceFloor` parameter's
+  own lower bound to 0 dBFS; its one rule sits at that parameter's *live* value. Two separate inputs on purpose: an
+  axis tied to the gate pins the rule to the field's bottom edge, and a rule that cannot move when the dial does is a
+  photograph — `04` §5 arm 5 is that arm.
+
+**Cost:** one header in `Container` (a template, no `.cpp`), one in `Engine` (`TraceSink`, `TraceSnapshot`), two
+members and two methods in `MixEngine`, one ring plus one lock plus four getters in the processor, one timer leg in
+the editor. With no editor attached the hop path pays one null test per hop.
+
+**Figures.** `§5.23`: 37 lines, 0 FAIL. **256 slots × 144 B ≈ 36 KB** at 48 kHz and H = 512 (the window is 187 hops
++ 1, rounded up); a 281-hop render hands back a full 256-slot window, hops 25…280 in order with the newest last; on a
+quiesced transport a published snapshot equals the stage's own getters exactly, both channels; widest inter-channel
+correction spread **10.32 dB** (`04` §2.1's figure, the input M9 row 1 is still asking about); the new `Container`
+allocation binary reads **0 allocations** across write/peek/drain/newest/clear including a deliberate overflow. Full
+suite **310/310, exit 0**, 39.23 s; `ctest -R "ui:"` 84/84; `vstplug_VST3` and `vstplug_Standalone` link at `-j4`.
+
+**Revisit trigger.** (a) A consumer that must not miss a hop — a logger, an offline renderer — needs its own ring or
+a gap-aware reader, not a shared peek. (b) Any change to `kTraceWindowSeconds`, which moves the capacity and
+`kMaxTraceHistory`'s bound in the same change. (c) A configured hop × rate pair faster than 6000 readings per window,
+past which the panel's history bound truncates the trace short of its left edge. (d) A second writer behind the same
+seam: two engines publishing into one ring voids the single-producer rule the tags rest on.
+
 ## F-001 — JUCE 9 latency plumbing
 
 **Status:** Finding.
@@ -1849,16 +1947,18 @@ configuration. Each turned up as a red leg, not as a look at a screenshot.
    carried through six lines. Taking every edge as `round(n × em)` from the stack's own top rather than
    `previous + unit` brought the resize sweep to **1 px at 595, 1 px at 893, 1 px at 1000 (off-aspect), 2 px at
    2380**. The rule generalises: `round(n · x) ≠ n · round(x)`, and only the first is proportional.
-3. **`getAscent()` is the cap height on the shipped face, so a control that relied on their differing went blind.** The
-   cap-placement leg laid its control out from `getAscent()` and required it to miss the requested row; with Neue
-   embedded the two are **the same figure at all seven roles at both `k` = 1 and `k` = 3.778** — a 0 px gap — and the
-   leg was green while seeing nothing. The control now uses `getHeight()`, the em box, which cannot equal the cap for
+3. **`getAscent()` was the cap height on the face of the day, so a control that relied on their differing went blind.**
+   The cap-placement leg laid its control out from `getAscent()` and required it to miss the requested row; on the M10
+   face the two were **the same figure at all seven roles at both `k` = 1 and `k` = 3.778** — a 0 px gap — and the leg
+   was green while seeing nothing. The control now uses `getHeight()`, the em box, which cannot equal the cap for
    any face with lowercase. This is F-017's trap one level down: a control whose power comes from two metrics
-   *disagreeing* has to be checked for the disagreement, not just for the miss.
-4. **Words overrun their boxes: 7 of 16 with the design's face, 5 of 16 with the host's substitute — and the ramp
-   cannot fix it.** The ramp is a height ramp (`resolve(role, k) = em × k`) and the design's figures come from the
-   mockup's measured **cap heights**; the widths came from whatever face the mockup was drawn in. At the reference
-   sheet with the embedded Neue:
+   *disagreeing* has to be checked for the disagreement, not just for the miss. (Clash Display diverges — hhea ascent
+   0.8900 em against a 0.6700 em cap, F-030 — so the leg's old power would have returned with the new face, which is
+   the reason the fix moved to a metric rather than to a tolerance.)
+4. **Words overrun their boxes: 7 of 16 with the M10 face, 5 of 16 with the host's substitute — and the ramp cannot
+   fix it.** The ramp is a height ramp (`resolve(role, k) = em × k`) and the design's figures come from the mockup's
+   measured **cap heights**; the widths came from whatever face the mockup was drawn in. At the reference sheet, with
+   the face embedded at the time:
 
    | word | drawn | box | verdict |
    |---|---|---|---|
@@ -1873,7 +1973,10 @@ configuration. Each turned up as a red leg, not as a look at a screenshot.
    The same leg on the substitute face read **5 of 16** over with the worst at **22 %** (`normalisationAmount`), so the
    swap added two words and moved the worst case 6 points. Not a criterion failure — the loss is bounded at half a
    string and the kit clips at the box's own edge — but it is why a caption can break inside its paint, and the table
-   any width relief (a shorter string, a wider column, a squeeze on one role) has to be written against.
+   any width relief (a shorter string, a wider column, a squeeze on one role) has to be written against. **D-031 wrote
+   that relief**: the same instrument now measures every word against the room it actually draws in and the gate refuses
+   any deficit at all, so the sheet reads **0 rows over at 595, 1190 and 2380 px** with the M11 face. The table above
+   is the M10 face's capture, kept because it is what the relief was priced against.
 5. **`ComboBox` centres its child label's em box, so the kit's cap arithmetic had to anchor it top-left.** A choice
    bar's value words are the `ComboBox`'s own `Label`, placed by `positionComboBoxText`, and `Justification::left`
    centres that box vertically: the inked cap top landed **3 px under the box top (93 against 90**, cap height
@@ -1904,3 +2007,514 @@ drawn *weight* against the mockup's — the 11 % is a width figure and argues no
 **Revisit trigger.** A change to the ramp's weight column (D-025's third-weight trigger); any decision to widen a
 column, shorten a caption string or squeeze a role, which has to be written against item 4's table; a JUCE upgrade,
 because item 1's line-advance reading and item 5's `positionComboBoxText` behaviour are both 9.0.4-specific.
+
+## F-025 — A kit widget reads its own default until its attachment exists, and a peerless `repaint()` never reaches `paint()`
+
+**Status:** Finding. Both halves cost `04` a red leg each; both are ordering or observability facts about JUCE, not
+defects in this code.
+
+- **Read the parameter, not the widget, and attach before you read either.** Every kit control is a `juce::Slider`
+  subclass, and until `SliderAttachment` is constructed for it the slider holds its *own* default — `0.0` — not the
+  parameter's value. `EntangleAudioProcessorEditor`'s constructor set the envelope panel's gate from
+  `silenceFloor.getValue()` while `silenceFloor` was still unattached, so the panel held 0.0 dB and drew its rule on
+  the axis's top edge (y 19 where the parameter's −60 dB is y 82). §5.23's C5 leg reddened on it. The constructor
+  order is therefore: build the widgets → create the attachments → only then read a widget's value into anything.
+  This is the widget side of the construction-order rule the `juce-apvts-parameters` reference carries for the value
+  tree, and a headless leg catches it while a look at the running plugin does not — a freshly-attached slider is
+  corrected by the attachment's initial push before the window ever shows.
+- **A `repaint()` with no peer is dropped at the root, so a zero paint count proves nothing.**
+  `Component::internalRepaintUnchecked` bubbles the dirty rect to the parent and the peerless root discards it, so in
+  `UiProbe`, `UiAllocTests` and every `OfflineRender` rig `paint()` is never reached — those programs drive it
+  explicitly through `paintEntireComponent`. A leg must therefore never claim "no repaint" from a paint counter in a
+  console run: `paintCount() == 0` is a property of the rig. Count what the call path actually reaches — drains and
+  path rebuilds, which `§5.23` does — and leave the *extent* of a repaint (criterion 9's "confined to the two panel
+  rects") to A8, where a peer exists and a dirty region is visible.
+
+**Do not** re-arm either as a counter: the first is fixed by the constructor's order and its leg is the parameter move
+(arm 5), the second is not observable headless at all.
+
+## F-026 — Two display legs pass without their guard: the ring's mid-copy tag, and the shell's frozen window
+
+**Status:** Finding, from `04` §5's arms on 2026-11-18. Neither is a defect in what shipped. Both are places where a
+regression would print green, which is the only reason they are on this log rather than in a risk table.
+
+- **The tearing leg does not exercise the tag protocol.** `trace ring: a racing writer cannot tear a record` — 20 000
+  writes against a capacity-4 ring, writer thread against reader — stays green when `TraceRing::write` stores the
+  *written* tag **before** it copies the payload. The tag's **value** still moves with every lap, and refusing a
+  lapped slot is what that loop actually measures; the odd/even in-progress marker matters only for a read landing
+  inside the single assignment, and 20 000 iterations never hit it here — all 30 `trace` cases, all 84 `ui:` cases
+  and `§5.23` read 0 FAIL on that mutant. So the leg decides order and lap-refusal. Arming the mid-copy property
+  needs a mutation that holds the slot in the writing state across something observable (a payload wide enough to
+  copy slowly, or a writer that pauses inside `write`); re-arming it the obvious way buys a green and no information.
+- **`§5.23`'s shell legs never assert that the newest published hop is the last hop driven.** A ring that refuses the
+  new record when full instead of lapping it freezes the window at capacity, and the section does not notice: C1's
+  shell premise prints **hop 255 for a 281-hop render** and the section still reads **37 lines, 0 FAIL**, because
+  every shell leg compares the window against itself and against `newest` — order, depth, consumption. The drop
+  policy itself is decided where it lives (the ring: 5 of 30 cases red on the same mutation), so shipped behaviour is
+  covered; what is uncovered is the shell publishing into a ring that stopped moving. One line in
+  `theShellPublishesTheHopSequence` — the newest hop index against the hops the render drove — closes it.
+- **`UiAllocTests` weighs the kit's five controls plus `Panel` and `Text`, not the two trace panels**, so a
+  `std::vector` built inside `ResponsePanel::paint()` has no allocation witness. Arm 7 was caught by the palette legs
+  — that mutant also lays ink down — and not by an allocation count, which is the rule it was armed for.
+
+**Do not** read any of those greens as a pass for the property its leg's name claims. **Do** add the shell's hop line
+and a trace-panel allocation case the next time either file is open, rather than as a change of their own.
+
+## F-027 — A header-writing `operator new` shim aborts under Mach-O's two-level namespace
+
+**Status:** Fixed 2026-11-18, the day it appeared. Found building the tree on macOS arm64 (AppleClang 16), where
+`ReconfigureTests` died during Catch2's post-build test discovery. The ledger is now `#ifdef __linux__` and the three
+byte legs SKIP elsewhere; the counted legs run on both platforms.
+
+- ELF resolves the executable's strong `operator new`/`operator delete` for **every** caller in the process,
+  libstdc++'s own internal calls included. Mach-O's two-level namespace binds `libc++.1.dylib`'s internal references
+  to libc++'s exported pair, so the app's shim never sees what the dylib allocates.
+- `ReconfigureKeyTests.cpp` held the only shim in the tree that moves the payload up by `span` and keeps size and raw
+  base in the 16 bytes below it. A libc++-owned block reaching `releaseCounted` reads a header that was never written
+  and calls `std::free` on the value found there → SIGABRT inside malloc, before any test body runs.
+- The signature to recognise: it fails on the **link** edge (`FAILED: src/Engine/tests/ReconfigureTests`) with
+  `Error running test executable … Result: Subprocess aborted` and `Output:` empty. That is `CatchAddTests.cmake`
+  running the freshly linked binary with `--list-tests`; the script captures stdout only, and malloc's diagnostic goes
+  to stderr. Not a link error. Run the binary directly for the reason.
+- The sibling shims in `HopSchedulerTests`, `MixEngineTests`, `ChannelMapTests`, `LayoutGateTests` and
+  `TraceRingAllocTests` pass `size` straight to `std::malloc` and free the pointer unchanged, so a cross-boundary free
+  is still `free()` of a live block — they are immune, which is why only one target died. Take that shape for a new
+  counter unless the leg genuinely needs the size at unsized-delete time. Second way these shims can lie, after F-019.
+
+**Figures.** Linux Release: 14/14 `reconfigure` cases. Mutation `liveBytes += size + 1` inside the ledger reddened
+exactly the three byte legs — `prepare sizes by source in and processed out`, `a narrower re-prepare releases the
+sidechain rings`, `hop scratch keeps its capacity across a narrowing` — and left the counted legs green, so the gate
+did not blind them. With `kLiveByteLedger` forced false to stand in for the Apple branch: the same three Skipped, 11
+passed, exit 0, no abort. Ten JUCE-light binaries after the change: 203 cases, all passed.
+
+**Do** treat `Subprocess aborted` on a link edge as test-discovery death. **Revisit** when a byte leg must run on a
+Mac: `DYLD_INTERPOSE` behind a launcher is the route, and it buys a binary that needs an environment to run.
+
+## D-028 — The container's build volume mounts outside the `/workspace` export
+
+**Status:** Accepted (M10), to close F-028.
+
+**Decision.** The build volume mounts at `/ct/build` and compose sets `BUILD_ROOT=/ct/build`, so a container tree is
+`/ct/build/<config>` while a host tree stays `build/<config>`. `make install`, `make build`, `cmd/install` and
+`cmd/build` resolve `BUILD_ROOT` themselves, so no command in the repo carries a container-specific build path. The
+image creates and owns `/ct/build`; the entrypoint probes it for writability and names `docker volume rm vst3-build`,
+because a named volume takes its ownership only when first created and a wrong seed survives every rebuild.
+
+**Consequence.** Nothing the container mounts creates a directory in the host tree any more, so the host owns
+`build/` outright and `rm -rf build` works with the stack up. The trade: a container tree that reaches `/workspace`
+anyway — an explicit `cmake -B build/…`, or `BUILD_ROOT` unset — is no longer shielded, and appears on the host at the
+container's numeric uid. The `USER_UID`/`USER_GID` build args match this host, so those files stay deletable; the
+escape is visible rather than fatal. `chown -R "${USERNAME}:"` (colon, not bare user) keeps the volume root's group at
+the login group — `chown -R user path` leaves it `root`.
+
+**Revisit trigger:** a container that cannot run the host's uid, or a second container that must share these trees.
+
+## F-028 — A mountpoint inside the shared tree carries `deny delete`, so the host cannot remove `build/`
+
+**Status:** Fixed 2026-11-21 by D-028. Found on macOS with Docker Desktop's VirtioFS sharing, clearing a host build
+tree while the stack ran.
+
+- The symptom is a single line — `rm: build: Permission denied` — printed *after* everything inside `build/` is
+  already deleted. Owner is the invoking user, mode 0755, no flags, no foreign uid anywhere in the tree: every
+  ownership hypothesis tests green and is wrong. `ls -lde build` shows the cause, `0: user:mike deny delete`. A deny
+  ACE is evaluated before any allow, so `unlink`, `rmdir` and `rename` all return EACCES on that one directory while
+  its children delete normally.
+- Stripping the ACE (`chmod -a "user:mike deny delete" build`) let `rmdir` succeed immediately **with the stack still
+  up**, which is what separates an ACE from a vnode hold. The earlier directory had no ACE at all and still refused:
+  there `lsof` showed `com.apple.Virtualization.Virtua` holding `30r` on its inode, and `docker compose down`
+  released it. Two Docker mechanisms, one symptom.
+- `docker compose up` recreates the directory. Its birth timestamp landed on the container-start second and it arrived
+  with the ACE already applied, so while the volume mounts inside the export the host cannot have both a running
+  stack and no `build/`.
+- `deny delete` misleads triage: nothing in EACCES-on-`rmdir` points at a sharing layer, so the search goes to uid
+  mapping and seed ownership first. Read the ACL before the ownership story — `ls -lde <dir>`, or `stat -f '%Sp'` and
+  look for the `+`.
+
+**Do** suspect a deny ACE whenever the *owner* cannot remove a directory on macOS. **Revisit** if a Docker Desktop
+upgrade changes how it guards mountpoints inside a shared tree.
+
+## D-037 — Clash Display is vendored under the ITF Free Font License and re-fit to the cap the sheet was laid out for
+
+**Status:** Accepted (M11) on the reading recorded below. The licence was read from the text that ships with the
+family rather than answered by the foundry — the user's ruling of 2026-11-21 was to ship without the enquiry — and the
+two points that reading cannot settle are named where a reply lands.
+
+**What changed.** The M10 face (D-025) left two statements open with nothing to close them: a licence nobody held and
+a drop that had to stay untracked. The replacement closes both and is the better fit for the sheet: a geometric
+grotesque with open apertures, which is what survives a 17 px label on a dark ground. The
+mechanism did not move — `EntangleFonts` still holds the bytes, `typefaceFor(weight)` still resolves through the ramp,
+and no call site names a family (D-025).
+
+**The bytes.** Vendored and tracked in the foundry's own drop, `public/ClashDisplay_Complete/`:
+
+| File | Bytes | Role in the ramp |
+|---|---|---|
+| `Fonts/OTF/ClashDisplay-Light.otf` | 27 000 | `TypeWeight::light` |
+| `Fonts/OTF/ClashDisplay-Bold.otf` | 25 276 | `TypeWeight::bold` |
+| `License/FFL.txt` | 12 734 | the grant the product relies on |
+
+`src/UiJuce/CMakeLists.txt` names those two face paths and nothing else from the drop, so the other four weights,
+the italics, `ClashDisplay-Variable.ttf` and the web formats sit in the tree and stay out of the binary. They link
+`libEntangleFonts.a` at **57 170 B** against the M10 face's 915 914 B (`EmbeddedResource` sizes
+`ClashDisplayLight_otfSize = 27000`, `ClashDisplayBold_otfSize = 25276`). Both paths are tracked — the drop since
+`7128e9d`, the Helvetica set since `d84784e` — which is what lets a clone configure, and why no second copy of the
+bytes is kept: it could only drift. The packaging rule and its leg are D-025's. That the whole drop is in a repository
+pushed to `origin` is a distribution question of its own — clause 02 names a "repository" among the channels it
+restricts — so it is recorded here beside the two open points below rather than argued; removing it is a history
+rewrite, which is the user's call, not this item's.
+
+**The licence, and the clause relied on.** The **ITF Free Font License** (Indian Type Foundry's Fontshare EULA), read
+in full on 2026-11-21 — the clauses the decision turns on, in their own words:
+
+| Clause | What it says | What it decides here |
+|---|---|---|
+| 01 Grant | "a non-exclusive, non-assignable, non-transferable and terminable license to access, download, install, store and use the Font Software **for personal or commercial purposes**, free of charge and for an unlimited period of time"; "in any media, including Print, Websites, Mobile or Desktop Applications … at any scale and in any location worldwide"; the device count is unrestricted; internal sharing inside an organisation "does not constitute redistribution" | A commercial plugin is a permitted *use*, and there is no seat or device ceiling to design around |
+| 01, fourth paragraph | "**You may embed the Font Software in mobile or desktop applications and digital documents for the uses permitted under this License.**" | The express grant, not an inference: embedding the face in a desktop application is one of the permitted uses named in the grant itself |
+| 02 Limitations | No modification without written consent — naming "modifying or replacing glyphs, **subsetting, format conversion**, or altering font names, copyright information, ownership information or other metadata". No distributing, duplicating, loaning, reselling, sublicensing, transferring, donating, giving away or otherwise making available to any other person or entity, "whether for free or for a fee", including through "another font website, font library, marketplace, repository, download service, application or platform". No hosting, serving or embedding "for use by third parties" so that they can "create, edit, customize or generate their own content" | The shipped bytes are the foundry's own, unmodified (arm 16 is a licence violation, not an optimisation), and nothing offers the face to anyone as a font |
+| 02, final paragraph | "For the avoidance of doubt, nothing in this Section 02 restricts the self-hosting, **embedding** or other use of the Font Software by the Licensee **for the Licensee's own** websites, **applications** or other permitted uses under Section 01" | The limitation-relief that keeps clause 01's embed grant usable once the application leaves the Licensee's own machine: Entangle is the Licensee's own application, drawing its own words |
+| 03 Embedding | Embedding in "PDFs and other digital documents for your permitted uses", "provided that the embedded Font Software cannot be extracted or used independently from the document"; extraction for independent use is prohibited | Its condition is written for documents, so it does not attach to the clause 01 grant an application embeds under. The practical exposure is the same one — a plugin's resources can be lifted, and clause 02 prohibits extraction for independent use — so it is recorded, not argued away |
+
+The reading, stated plainly: clause 01 grants embedding in a desktop application in as many words, so what ships is
+an *application the Licensee is entitled to build*, not the Font Software offered to anyone as a font. The
+prohibitions this reading must keep clean are modification (so the `.otf`s are byte-for-byte the foundry's), offering
+the face to third parties as a font (never), and hosting it so others may select it (never). Two things remain open
+and are the reason this row is not closed: clause 02 forbids distributing the Font Software "through another …
+application or platform", and it does not say whether a plugin bundle whose resources contain the face is that case or
+the embedded-application case clause 01 grants — the carve-in at the end of clause 02 points the permissive way, and
+clause 03's no-extraction condition is written for documents, not applications, so on the text there is no
+un-extractability requirement on an application; and nothing in the licence addresses a VST3, a format whose bundle is
+a directory a user can open. The user's ruling of 2026-11-21 is to ship on the reading above without waiting for ITF's
+reply; a reply that contradicts it is a distribution question, not a code question, and lands here.
+
+**The weight map: the second arm.** `TypeWeight` is now `{light, bold}`:
+
+| Arm | What it ships | Why not |
+|---|---|---|
+| (a) caption stays a medium weight | Restores the mockup's heavier captions; +1 weight ≈ 26 kB | Breaks the cap-hold rule for three roles at once; it is a look, not a contract, and D-024's row already says the caption's weight is D-025's to fix |
+| **(b) two faces, `{light, bold}`** | `caption` renders Light, one step lighter than the mockup | **Taken.** The cap-hold — the sheet must look the same size after the swap — outranks a weight restored from a mockup. Flipping one ramp row to Medium costs a re-fit of that role's squeeze and ~26 kB, not a code change |
+| (c) `ClashDisplay-Variable.ttf`, one instance per role | One file, every weight on the `wght` axis | Rejected **on measurement** — §0 H's probe is below. It works on this backend, and costs more than the two statics while removing the identity every face leg reads |
+
+The seven roles keep their weight column: `wordmark` and `figure` Bold, the other five Light. `caption` moving from
+Medium to Light is the one visible consequence of arm (b).
+
+**Arm (c), probed 2026-11-21.** `public/ClashDisplay_Complete/Fonts/TTF/ClashDisplay-Variable.ttf`, 88 064 B, one
+axis: `wght` 200 … 700, default **700**, six named instances, nameID 1 "Clash Display Variable". Loaded through
+`Typeface::createSystemTypefaceFor` and cloned per weight, the advance of `Window Size 128` at a 100 px height:
+
+| Instance | 200 | 300 | 400 | 500 | 600 | 700 | static Light | static Bold |
+|---|---|---|---|---|---|---|---|---|
+| advance px | 660.702 | 667.632 | 680.439 | 698.158 | 718.684 | 737.105 | **667.632** | **737.105** |
+
+Both of §0 H's proofs hold on this backend (FreeType, Linux): the clones differ monotonically, and the shipped static
+Light is the `wght = 300` instance to the last printed digit, the static Bold the `wght = 700` one. The route also
+keeps D-025's rule — `FontOptions{}.withTypeface(clone)` yields a `Font` whose typeface *is* the clone (pointer
+equality), so no family-name lookup is needed; `withTypeface` does clear the options' variable list, but the instance
+is already baked into the clone by `cloneWithVariableSettings`.
+
+Arm (c) is refused anyway, on two figures:
+
+* **It costs more, not less.** 88 064 B against the 52 276 B the two statics occupy — **+35 788 B for the two weights
+  the ramp binds**. The variable file only wins past three weights, which is a D-032 question, not this one.
+* **The instance has no name.** Every clone reports the same nameID 1 and style — "Clash Display Variable" / "Bold",
+  including the one drawing at 200 — so the identity assertion D-025 exists for, and which c13 runs, cannot tell the
+  weights apart. `getConfiguredVariables()` reports the value that was *asked for*, never what the rasteriser used, so
+  a variable face would leave the sheet with no checkable claim about what drew. The static pair each carry their own
+  PostScript name and are the version that can be audited.
+
+The macOS and Windows backends were not probed and cannot be here (INDEX §4); the refusal does not depend on them.
+
+**The ramp, re-fit.** The rule was *hold the cap height the M10 sheet was laid out for* and take up the width with a
+squeeze. Two measurements drive it: the drawn cap of the old face at each role, and this face's cap as it actually
+draws. `FontOptions::withHeight` sizes the **line box**, not the em, and with the pinned pair the line box is 0.898 em,
+so a target cap of *C* needs em = *C* / 0.7461 — the factor between the drawn caps is **×1.0627**, not the ×1.0448 the
+declared `sCapHeight` figures suggest (F-030).
+
+| Role | Weight | em | Squeeze | Drawn cap at the reference sheet |
+|---|---|---|---|---|
+| `wordmark` | bold | 68.0 | 0.77 | 50.73 px |
+| `caption` | light | 59.5 | 0.67 | 44.39 px |
+| `barLabel` | light | 67.5 | 0.65 | 50.36 px — the one role that does **not** hold (D-031) |
+| `barValue` | light | 67.0 | 0.70 | 49.99 px |
+| `rotatedCaption` | light | 55.3 | 0.66 | 41.26 px |
+| `figure` | bold | 37.2 | — | 27.76 px |
+| `micro` | light | 23.4 | 1.00 | 17.46 px |
+
+The squeeze floor is `juce::Font::getDefaultMinimumHorizontalScaleFactor()` = 0.7 **for a font that requests a squeezed
+layout**; below it a *fitted* layout stops squeezing, so a role that needs less than that paints a deficit rather than
+clipped words — which is why the squeeze lives in the ramp and the fit rule (D-031) refuses a role that needs more than
+it gives.
+
+**Digits carry the rows, so the digits are pitched.** The instrument measures `0`–`9` only: 0.681 em each, fixed, with
+`1` at 0.273 em unpitched. The separators and signs are deliberately left out of the pitch set (a digit-width `.`
+would be a visible artefact in prose readouts; `+`/`−` are not digits, and nothing sits beside the meter's number for
+a shift to move against — C16 prints `+12` against `-12` as an observation, not a gate).
+
+**Pinned face metrics.** `sLineGap = 0`, `sCapHeight = 0.6700`, `sXHeight` 0.4910 Light / 0.5040 Bold — the factory
+writes them on both faces and the instrument reads them back through `Font::getCapHeight()`/`getXHeight()`, which pass
+through to `Typeface::getMetrics` where the substitution happens (measured == declared to 0.000 em). The *layout* box
+stays the face's own — 0.7951 above / 0.2049 below against the face's 0.7807 / 0.2193 — because `getAscent()`/
+`getDescent()` have no substitution hook. Pinning is what stops the seven-role fit drifting with a different rasteriser.
+It is a runtime hint written into the typeface this process loaded: the vendored file's own tables are untouched, which
+is what clause 02's bar on edited metadata requires and what the byte check below proves.
+
+**Figures.** Face leg: `ClashDisplay-Light` 27 000 B and `ClashDisplay-Bold` 25 276 B from the embedded bytes, units per
+em 1000, declared cap 0.6700 em, drawn gap to declared 0.000 em. The files the build reads are the foundry's own
+drop — `public/ClashDisplay_Complete/Fonts/OTF/`, sha256 `3059ccd0afe04a35…` (Light) and `cbf5670a6d502f69…` (Bold) —
+so nothing subset, converted or re-titled is in the tree (c12, c19). C15 squeeze: **0 of 7 roles** below the floor.
+C17 coverage: **58 codepoints, 0 missing**; the control character U+2192 reads absent as designed. C14: six of seven
+roles hold within 1 px, `barLabel` 50.36 against 63.43 — the authorized deviation (D-031). A fresh
+`cmake -S . -B <empty>` of the tracked tree configures and builds `EntangleFonts`.
+
+**Not measured:** hinting and stem darkening on another rasteriser (FreeType here); the wordmark's drawn *weight*
+against the mockup — it is Bold, and `03`/D-032 owns whether a heavier cut is the sheet's; the pinned metrics on macOS,
+where CoreText reads the same tables through a different path.
+
+**Revisit trigger.** (a) Any reply from the foundry, contradicting or confirming; (b) a third weight, which is one ramp
+row and ~26 kB (D-032 asks it for `figure`); (c) a word no squeeze clears, which is D-031's menu rather than a new
+face; (d) a JUCE upgrade, because the line-box reading behind the ×1.0627 factor and the 0.7 squeeze floor are 9.0.4
+behaviour.
+
+## D-031 — Text fits by measured deficit: widen the column, squeeze the role, or reword the string, decided per word
+
+**Status:** Accepted (M11). The per-string rulings are the user's, 2026-11-21. Ships with F-031, which is how the class
+escaped the suite.
+
+**Why a decision was needed.** QA's A-1 found clipped words on the sheet. Measuring properly — the advance against the
+room the `paint()` actually gives, both axes — found **46 of 63** word rows over at the reference sheet, so this was
+the sheet's normal state, not an edge case. The relief is not one change: a column can widen, a role can squeeze, a
+string can change, and which of the three applies is a per-word judgement about what the word is *for*.
+
+**The rule.** The three moves, in the order that costs the design least:
+1. **Squeeze the role** when the word is the only tenant of its room and the deficit is a few percent — one table row,
+   no geometry moves. The floor is the squeeze the toolkit will still honour (D-037).
+2. **Widen the column** when the words are the column's purpose and something else can pay — a column is a *derived*
+   figure; its millimetre value is the floor, never the ceiling.
+3. **Reword** when the words are longer than the sheet's grammar needs. Abbreviate to the same register as their
+   neighbours; a word may lose a unit or a decimal only if nothing else on the sheet still carries it.
+Auto-shrink inside `paint()` is refused: it is a fit rule that runs at the wrong end, silently, per frame, and it would
+have to re-derive the geometry it is squeezing into.
+
+**Per string.**
+
+| Word (role) | Short by, at the reference sheet | Move | After |
+|---|---|---|---|
+| `wordmark` "Entangle" | 30.9 px of 264 | squeeze 0.82 → **0.77** | 260.6 in 264 |
+| `levelCaption` "Volume Ctrl" | 53.6 | reword → **"Level Ctrl"**, squeeze 0.75 → 0.67 | 193.0 in 262.4 |
+| `windowCaption` "Window Size" | 161.4 | same squeeze (no grid change) | 262.4 in 264, 1.6 px spare |
+| `outputGain` label "Out" | 8.4 of 75 | **widen the label column to the words** | 83.4 in 100 |
+| `normalisationAmount` "Amt" | 23.6 | same | 98.6 in 100, 1.4 px spare |
+| `silenceFloor` "Flr" | — | same | 60.4 in 100 |
+| `appliedCorrection` "Adj" | 25.3 (the `j` descender) | keep the word, **shrink the role** 85 → 67.5 em | 71.9 in 100; its cap is 50.36 px, **13.07 px under** the old face — the one role exempt from c14's hold |
+| a bar's value "0.0 dB" | 3.5 of body − inset | squeeze 0.75 → **0.70** | 4.4 px spare |
+| the meter's value "−36.0 dB" | 104.8 | reword to sign + whole dB → **`-36`** | 86.7 in 160 |
+| `grainReadout` "8192 samples = 170.7 ms" | 59.1 | squeeze → 0.70, and the stack reserve counts the **lines the words make** | fits; 7 lines at the reference sheet |
+| `rotatedCaption` ×3 | 6.6 (Worst: Waveform, rotated) | em 52 → 55.3, squeeze 0.66 | Waveform 206.4 into an extent of 211 |
+| cell 9's new labels | n/a | **"Grain" / "Hop"** at `micro`, inset by their own measured column | 65.1 / 49.1 in 75; items 142.3 / 106.7 in 181 |
+
+**Rejected.** A tolerance on the deficit (the deficit is what the eye reads); scaling `k` down (shrinks the whole sheet
+to rescue four words); shrinking every role (loses legibility at half scale, where the `micro` em is already 11 px);
+the declared-metrics cap factor (D-037); and a grid change — widening the label column is a derived figure, the 19.8 mm
+millimetre value stays as the floor, and the cell pitch never moved.
+
+**Figures.** Red capture (the shipped sheet measured the new way): 46 of 63 rows over at 1190 px, worst `windowCaption`
++161.4 px. After: **0 deficits at 595, 1190 and 2380 px**; tightest word at the floor is `windowCaption` 131.2 of
+132 px; the layout sweep's worst rounding stays **2 px** (bound 3) including the off-aspect 1000 × 794; the sheet still
+places 22 components with none inside a reserved cell.
+
+**Not measured:** what a host's shaping does to a word 1.6 px from its box — the margin is a pixel, and this container's
+FreeType is the only rasteriser measured; whether "Level Ctrl" is the word a user expects (c11, human-judged, host
+named).
+
+**Revisit trigger.** Any new word on the sheet — it runs the same gate before it lands; a column whose widest tenant
+changes, since the column is derived per resize; the first host screenshot, which is where a 1.6 px margin either holds
+or does not.
+
+## F-030 — A contemporary variable family under JUCE: the pair you get is not the name you asked for, and the line box is not the em
+
+**Status:** Finding, from the swap that D-037 records. Each item cost a leg or a figure, and the first four are silent
+on any face whose metrics are legacy ones.
+
+1. **JUCE matches the *typographic* pair, not the product name.** `Typeface::createSystemTypefaceFor` resolves a family
+   through the name table, and for a weight-specific legacy family the pair it reports is nameID 16/17 ("Clash
+   Display" / "Light") while nameID 1/2 carry "Clash Display Light" / "Regular". A leg asserting the family name is
+   therefore asserting whichever pair JUCE chose, and a face whose subfamily naming differs inverts the expectation
+   without any code changing. **Identity is nameID 6 (`postScriptName`)** — `ClashDisplay-Light` — so the skin's face
+   leg reads the name table out of the embedded bytes and asserts that. The harness header that does it is
+   `tools/harness/FontNameTable.hpp`; the same file also yields the units-per-em and the hhea range, which is how the
+   instrument gets a second opinion on the metrics JUCE pins.
+2. **No `tnum`.** One figure set, with `1` at 0.273 em and `0` at 0.681 em. There is no tabular axis to request, so
+   figure stability is a property this project builds (pitching digits in the factory) rather than one the face
+   provides. A future `Ligature`/`cv` feature request has no hook either: the static OTFs expose `calt` and `liga` and
+   nothing else worth disabling.
+3. **`getAscent()` is not the cap, and the *layout* box is neither.** hhea ascent 0.8900 em against a 0.6700 em cap;
+   the layout box JUCE computes is 0.7951 above / 0.2049 below. The M10 face's `ascent == cap` equality (F-024 item 3)
+   was a legacy-family coincidence, and a leg whose power came from the two figures *disagreeing* would have quietly
+   regained it here. Nothing in the layout uses either figure for cap alignment.
+4. **The pinned line box is smaller than a cap plus a descender's ink.** With `sLineGap = 0` and a declared ascent +
+   descent of 0.898 em, a cap-aligned baseline leaves 0.152 em below it, where a descender needs ≈0.225 em. So
+   `getAscent() + getDescent() < capHeight + descentInk` and **no** em makes both a cap hold and a descender fit a
+   cap-aligned row. That is the geometry behind D-031's `Adj` ruling: the row's height was never the binding term —
+   the box the toolkit computes is.
+5. **`FontOptions::withHeight` sizes the line box, not the em.** With the declared pair pinned, em = height / 0.898, so
+   a cap measured at height *E* is 0.7461 × *E*, not the declared 0.6700 × *E*. Every re-fit figure in D-037 divides by
+   the line-box term; the instrument sidesteps it by pinning 1/0 so em = height exactly.
+6. **`juce::String(juce_wchar)` formats the codepoint instead of building the one-character string.** `char32_t` binds
+   `String(int)`, so the pitch of `0` measured this way is the width of `"48"` — twice too wide, and every digit-bearing
+   row in the first capture was inflated (`128` read 297.5 px where it draws 152.4). `String::charToString` is the
+   constructor that means one character.
+7. **A variable instance has no name.** The same drop's `ClashDisplay-Variable.ttf` (88 064 B, `wght` 200–700, default
+   700, six named instances) clones correctly under FreeType and each clone advances differently — 660.702 px at 200
+   through 737.105 px at 700 for `Window Size 128` at 100 px — and the static Light is the 300 instance and the static
+   Bold the 700 one to the last digit. But **every clone reports the same nameID 1 and style: "Clash Display Variable"
+   / "Bold", at 200 as at 700**, and `getConfiguredVariables()` echoes what was asked for rather than what the
+   rasteriser used. The identity check D-025 exists for, and which c13 runs, would have nothing to read.
+   `FontOptions::withTypeface` also clears the options' variable list, so the instance has to be baked into a clone the
+   factory keeps alive. Refused on both counts — see D-037 arm (c), where the payload figure (+35 788 B over the two
+   statics) is the smaller objection.
+
+## F-031 — A tolerance on a proxy axis: four UI legs gated box positions and the instrument claimed the words were in bounds
+
+**Status:** Finding, found by measuring the thing the legs did not; closed by D-031. Numbered F-031 because F-028 was
+spent on the mount finding (D-028) before this row was written.
+
+- **The four legs never measured glyphs.** C1 checked each component's box against its cell, C9 checked a bar's label
+  *box* against its value *box*, C6 checked the ink-field rectangles, C7 checked child placement. All passed. The
+  instrument printed a line that read as a verdict on the words — "all words in bounds" — while gating `x` and `width`
+  of *containers*. The paint clips to the box, so the words were being cut on the sheet the whole time.
+- **The tolerance was inherited from the wrong subject.** ±3 px is the right bound for a box placed from millimetres:
+  it is the rounding floor. Words are roughly five times more sensitive in width than in height, so the same figure is
+  ~15 px of latitude on the axis where the sheet has none. A tolerance copied from a geometry leg into a text leg buys
+  a green suite and a clipped UI.
+- **The fix is a different gate, not a tighter one.** Every word on the sheet — 6 `ui::Text`, four bar labels and their
+  values, three rotated captions, the choice-bar items, the meter's number — is measured through the same route the
+  `paint()` takes and gated at **zero** deficit against the room that paint gives, on both axes, with the rotated
+  caption's room the rotated extent rather than the box's width. Box placement keeps its ±3 px. Two gates, two
+  subjects.
+- **The instrument's own arithmetic caught the same class twice.** Charging a stack as `ceil(ink) + (lines − 1) ×
+  round(em)` manufactured a 1 px deficit in a word that fitted, because the placer rounds its edges once
+  (`round(n × em)`) — the verdict now speaks the unrounded em (F-024 item 2, one level further down). And measuring a
+  digit's pitch with `String(char32_t)` (F-030 item 6) inflated every row that carries a number, which is most of them.
+- **The rule for the next leg.** A text leg gates the measured extent, not the box that holds it, and its threshold has
+  an arm that breaks it. A leg whose pass condition cannot fail is a printout, not a check.
+- **What the class cost:** 46 of 63 word rows over at the reference sheet, the worst 161 px in a 264 px box — clipped
+  on every shipped build of M10 while four legs and a full-suite green printed above it.
+
+## D-038 — Blend runs `[0, 1]` from dry A to the convolution; dry B leaves the sum; the datum leaves the sheet
+
+**Status:** Accepted (M11); measured, arms run. Amends **D-010** (the dry bus, the reachable `p`, the pin's dial
+position) and **D-011** (the blend parameter's range, its default and its words). `mixLawWeights` is untouched and
+still spans `[-1, 1]`; what changed is which part of it the product can ask for.
+
+**Why.** The dial's upper half faded the convolution into dry B — a signal the sheet never claimed, on a product
+whose sidechain is a level source and not a second voice. The mark that explained that half (a datum radial on the
+boundary) was the only thing on the sheet a user could neither act on nor read. Both go, and the parameter's bipolar
+domain goes with them.
+
+**Decision.**
+
+| Surface | Before | Now |
+|---|---|---|
+| Dial | `p ∈ [-1, 1]`, default `0` | `q ∈ [0, 1]`, default `1` — same id, same `1/128` quantum, automatable |
+| Meaning | −1 dry A · 0 the convolution · +1 dry B | `q = 0` dry A · `q = 1` the convolution |
+| Output sum | `g·[β·(w_dry·dry + w_wet·conv) + (1−β)·A]`, `dry` chosen by the sign of `p` | `g·[β·(w_dry·A + w_wet·conv) + (1−β)·A]` |
+| Dial face | `PieMode::datumAtZero` | `PieMode::proportional` |
+| Readout | a number beside a boundary word | `fully dry A` · `dry A + wet` · `fully wet`, plus the pin clause in words |
+
+- **One shift, in one place.** `entangle::effectiveBlend(q, sidechainActive)` (`src/Entangle/EngineChain.h`) is the
+  only expression that turns `q` into the law's `p` and the only home of the no-sidechain pin:
+  `sidechainActive ? q - 1.0f : -1.0f`. The editor, the parameter, the layout report's `blendEff` and the readout
+  speak `q`; `MixEngine` speaks `p`; nothing in between converts, so the shift cannot be applied twice. The shift is
+  a subtraction, so the reachable law domain is `p ∈ [-1, 0]` and the endpoint rows are the `t = |p|` law's own —
+  the law did not need re-writing and was not re-written.
+- **`coefB` is removed, not pinned at zero.** The member, its per-hop fill and its term in the sum are gone, so the
+  sidechain pointers no longer reach the output at all. `q = 1` is bit-exactly the old `p = 0`, which is why the
+  shipped default needed no re-based leg; any restored third term reddens the wet-window legs at full wet (arm 9:
+  32 769 failed assertions in the engine's reachable-domain case).
+- **The sign-crossing snap went with it and was not neutral.** It forced `p` to `0` for the sample after a crossing,
+  which zeroes the dry contribution for that one sample, and it fired on the first hop after every `prepare` because
+  `prepare` snaps the ramp while the tracker still holds its initial `0`. Rebuilt as it stood (arm 2) it reddens the
+  bit-exact dry legs at the **first sample after `R`** in every block plan — 3 709 failed assertions and 15 render
+  legs. The item predicted an equivalent mutant; the measurement is what D-010's amended bullet now says.
+- **The stored value is unchanged and its meaning moved.** `getStateInformation` is the APVTS XML and carries no
+  version, so a recalled `n` is simply re-read: `p = n − 1` where it was `p = 2n − 1`. A lane written before this
+  entry plays elsewhere — the old `n = 0.25` sat halfway from dry A to the convolution and now sits a quarter of the
+  way, nearer dry A. There is no migration to write and no version to bump, because no host has ever loaded this
+  plugin: `docs/host-layout-matrix.md` §5 has no row and the first save is M9 row 7. If a lane written under the old
+  law ever surfaces, its successor is `q = 2n` for `n ≤ 0.5` and has none above it — dry B has no destination.
+- **The datum is a kit capability, not a sheet feature.** `PieMode::datumAtZero` stays in `src/Ui` and in the kit's
+  paint path; the blend dial does not ask for it. M10 `02`'s C5 clause that leaned on the mark — the wedge mirroring
+  across the datum — is re-ruled as monotonicity in `q` with zero `ink` inside the disc, amended in that item's §2.4.
+
+**Figures.** From `OfflineRender` §5.20/§5.22 and `MixEngineTests` on the shipped tree, 2026-11-23:
+
+| Measured | Figure |
+|---|---|
+| Endpoint table, live A and silent B | `q = 0` peak 0.999987 · `q = 0.5` 0.707098 · `q = 1` **0** (`coefA` exactly `0.0f`) |
+| No sidechain | 129 dial positions report pure A; every 20th renders A delayed by `R`, bit-exact |
+| Dial grid | 129 positions tile `[0, 1]`, each round-tripping the parameter's snap and denoting `p = q − 1` exactly |
+| Stored position | `n = 0 → q = 0 → p = −1`, `n = 0.5 → 0.5 → −0.5`, `n = 1 → 1 → 0` |
+| The dial's face | `proportional`; `ink` inside the disc **0** at `q ∈ {0, 0.25, 0.5, 0.75, 1}`; sweep within 0.001 turn of `2πq`; `q = 0` plain `track` |
+| Off-palette scan | dark shell 0 off-line of 0; live 138 off-line, of which **138** inside the dial's rect |
+| Words | 75 rows × 3 widths, 0 deficits; the readout strings verbatim, pin clause included |
+| Suite | quick set 317 passed / 0 failed; `harness:` 7 passed, 1 skipped; `OfflineRender` passed; `vstplug_VST3` links at `-j4` |
+
+**Arms.** Sixteen valid runs of eighteen invocations; the two discarded attempts never reached a verdict (one
+mutant never arrived, one campaign stopped at its own pristine gate). Red as predicted: the double shift at the
+shell read; the deleted endpoint snap; the pin dropped and the pin moved to `+1`; the datum put back on the sheet
+(three dial legs red, every law leg green — the datum and the law are separately watched); the matrix default left
+in `p`; `coefB` carrying a weight at full wet; the C3 scan rect moved 200 px off the ink; the fold's `1/chB`
+replaced by `1`. Survived as predicted: aliasing the
+§5.1 identity leg's reference route against itself, and reverting C3's *sentence* — the leg's teeth are its rect,
+which the other arm moved and reddened. Wrong, and recorded: arm 2 (above) and arm 4, whose `0.01` turns out to tile
+`[0, 1]` exactly because F-010's residue needed the bipolar `−1 + interval × k` cancellation. The shape that does
+bite is a quantum that fails to tile — `0.03`, whose top position is `0.98999995`, so full wet stops being a dial
+position and 86 render legs go red. **F-032** is the leg-design rule that came out of it.
+
+**Refused.** Re-parameterising `mixLawWeights` to `[0, 1]` — the curve is dimensionless and its table is a tested
+contract, and a second copy of it is D-009's mistake. Keeping `coefB` as a zero term, or hiding the offset in the
+editor. Painting the datum at the top of the dial to mark full wet: a mark at the end of the travel is not a datum.
+A preset-rescale facility (index §9 — nobody has asked) and a state-version bump on the strength of a state that has
+never existed. Retuning any M3 level figure so that an endpoint passes.
+
+**Revisit trigger.** A mode that wants a datum re-admits the radial through `PieMode`, which still has it. The first
+host save (M9 row 7) makes the stored-`n` paragraph above a live compatibility question rather than a hypothetical.
+M9 row 9's listen owns whether full wet is the right default on material. A host that cannot automate a
+zero-based float would reopen the range, and no such host is known.
+
+## F-032 — A quantum guard built from the parameter's own constant cannot see a quantum that fails to tile its range
+
+**Status:** Finding, from the arm that D-038 records. Three of JUCE's behaviours stack so that a decimal interval on
+a zero-based range is indistinguishable from a dyadic one to any leg that asks for grid multiples.
+
+1. **`NormalisableRange::convertTo0to1` does not snap** (juce_NormalisableRange.h:136). The interval lives only in
+   `snapToLegalValue` (:188), reached through `RangedAudioParameter::convertTo0to1` (juce_RangedAudioParameter.cpp:51).
+   A parameter's construction-time default therefore never sees the quantum, whatever it is.
+2. **`AudioParameterFloat::operator=` short-circuits** a write of the value already held
+   (juce_AudioParameterFloat.cpp:107), so a leg that writes the shipped default writes nothing and observes nothing.
+3. **`snapToLegalValue` clamps to `end` after the interval arithmetic** (:196), and with `start = 0` what is left,
+   `interval × floor(v/interval + 0.5)`, has no cancellation: on `[0, 1]` with `0.01f`, `1.0f / 0.01f` rounds to
+   `100.0f` and `0.01f × 100` is `1.0f`. F-010's residue was the bipolar `−1 + interval × k` and it does not
+   transfer, so the interval that broke the old blend range is inert on the new one.
+4. **What does bite is a quantum that fails to tile the range.** With `0.03f` the top position is
+   `0.03f × 33 = 0.98999995`, so full wet is not a dial position, the law's endpoint snap sits a hundredth of a turn
+   away, and 86 render legs go red off that one constant.
+
+**The rule for the next leg.** A quantum guard asserts three things, and none of them is "the grid multiples
+round-trip": the grid tiles the range, so its last position *is* the endpoint; the endpoint is reachable by literal
+from the opposite end; and the arm meant to break the guard breaks the tiling, not the arithmetic. Reading a
+parameter back through the constant that built it is a tautology with a float in it.
+
+## F-033 — A Bundle-only generator expression in a POST_BUILD step stops the whole project configuring on Linux
+
+**Status:** Finding, 2026-11-24, surfaced by a change to a different library's CMake list. The re-sign
+`add_custom_command` in `src/Entangle/CMakeLists.txt` evaluates `$<TARGET_BUNDLE_DIR:${PROJECT_NAME}_VST3>`. On Apple
+a JUCE VST3 is a bundle; on Linux it is a shared library, and CMake refuses the expression for a non-Bundle target
+(`TARGET_BUNDLE_DIR is allowed only for Bundle targets`), so the generate step fails and no target in the project
+builds — tools and tests included, none of which touches signing.
+
+**Why it hid.** Ninja regenerates only when a `CMakeLists.txt` is newer than `build.ninja`, so a tree configured
+before the block landed kept building through every source edit. The refusal appears at the first CMake-list edit
+after it, and its text names a generator expression rather than a platform, so triage goes to the edit at hand.
+
+**The rule.** An expression or command that means something on one platform goes inside `if(<platform>)` in the same
+change that adds it. The re-sign is guarded now; on macOS the expression still evaluates and the step is unchanged.

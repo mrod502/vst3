@@ -7,7 +7,8 @@ processor and the test harness use. Everything below the shell is `src/Engine`, 
 | File | Role |
 |---|---|
 | `EntangleProcessor.h/.cpp` | buses, parameters, `processBlock`, layout gate and re-prepare guard, `layoutReport()`, the display ring's owner |
-| `EntangleEditor.h/.cpp` | the kit's shell: twenty components, three engine-truth readouts, two display panels and the correction meter, a 100 ms tick |
+| `EntangleEditor.h/.cpp` | the kit's shell: twenty-two components, three engine-truth readouts, two display panels and the correction meter, a 100 ms tick |
+| `SheetLayout.h/.cpp` | `entangle::sheet`: the geometry figures one layout pass reads (`Geometry`) and the eight `place*` functions that turn a box and those figures into component rects. Placement arithmetic lives here so the editor stays the thing that owns widgets |
 | `EngineChain.h` | `entangle::makeChain` / `makeShippedChain` — the one place the shipped chain is assembled |
 | `Entangle.h.in` | template for the generated `Entangle.h` |
 
@@ -24,7 +25,7 @@ every configure, silently discarding a hand edit.
 
 | Parameter | Range | Default |
 |---|---|---|
-| Blend | −1 … 1, step 1/128 | 0 |
+| Blend | 0 … 1, step 1/128 | 1 |
 | Hop size | choice 64 / 128 / 256 / 512 | 128 |
 | Grain length | choice 1024 … 65536 | 8192 |
 | Output gain | −60 … +12 dB, step 0.125 dB | 0 dB |
@@ -36,6 +37,17 @@ The two choice parameters are **indexed by position in a saved preset**, so thei
 part of the file format: append new parameters, never insert. The floats and the bool are looked up by
 id. Both quantisations are dyadic because a `juce::NormalisableRange` with a non-dyadic interval
 cannot express its own default or endpoints.
+
+**Blend is `q ∈ [0, 1]`: `q = 0` is dry A, `q = 1` — the default — is the convolution, and dry B reaches the
+output at no position (D-038).** `entangle::effectiveBlend(q, sidechainActive)` in `EngineChain.h` is the one
+place the dial's domain and the law's meet: it returns `q − 1`, so the engine runs on `p ∈ [-1, 0]` and is never
+asked for a positive `p`. Two consequences nothing downstream may re-derive:
+
+- A preset keeps the *normalised* value under the same id, so a lane stored at the old centre (`n = 0.5`, then
+  "wet only") now reads `p = -0.5` — half dry A. There is no rescale facility.
+- With no sidechain bus the pin is `q = 0`, which is `p = -1` in the law's vocabulary: the plugin renders dry A
+  whatever the dial holds, and the dial keeps its value. The editor and `layoutReport()` therefore report
+  `effectiveBlendPosition()` rather than the parameter, and say so in words.
 
 ## What the shell decides
 
@@ -67,9 +79,25 @@ never named. `resized()` reads the **width** alone, which makes an off-aspect ho
 rather than stretched. Parameters reach the DSP through the existing APVTS attachments; the tick
 writes only what changed.
 
+**The blend dial is `ui::PieMode::proportional` and the shipped sheet wears no datum mark (D-038).** A
+proportional wedge is empty at `q = 0` and one full turn at `q = 1`, so neither end is distinguishable on the
+face and the palette forbids a tint carrying state: `updateBlendReadout` says it instead — `fully dry A`,
+`fully wet`, `dry A + wet` — against the *effective* position, and appends the pin clause whenever the dial and
+what is running disagree. `OfflineRender` §5.22 C2, C3, C5 and C9 hold those four claims.
+
 **Construction order is load-bearing:** build the widgets → create the attachments → only then read a
 widget's value into anything else. Before its `SliderAttachment` exists a control holds its own default, not
 the parameter's — F-025.
+
+**Layout is measure-then-place, in `resized()`; `paint()` measures nothing.** One pass reads the grid's `k`,
+measures every word the sheet can show at the ramp scale (`ui::Theme::measureText` / `measureRun`) and derives from
+it the wordmark band, the caption band, the rotated band, the `micro` em, the label column and the truth stack's line
+counts; only then do the `entangle::sheet::place*` functions turn boxes into rects, each taking the geometry struct
+rather than naming a size. The label column is written into the skin (`theme.setLabelColumnPx`) because the painted
+body, the value's start and the pointer's mapping have to read one number (D-031). A readout whose **words** change
+re-runs the pass: the stack's reserve is counted in the lines those words actually make, so a layout that ran once
+before any truth existed would hold the floors forever. Every control carries the word that names what it sets —
+§5.22 C9 walks them.
 
 ## Display publication
 
@@ -93,8 +121,9 @@ the engine through `installTraceSink`.
 - **The spread is computed here and nowhere below:** the two extremes of the hop's per-channel corrections come
   from `ui::spreadOf`; with one processed channel they coincide, and the gap between them when there are two is
   the figure M9 row 1 is asking about.
-- **The meter is one-sided with the sign in the words** — `|gain| / gainRangeDb` as a fill, `+`/`−` in the value
-  words — because a fill that only ever grows reports a cut and a boost identically.
+- **The meter is one-sided with the sign in the words** — `|gain| / gainRangeDb` as a fill, sign and whole decibels
+  (`-36`) in the value words — because a fill that only ever grows reports a cut and a boost identically, and because
+  the decimal and the unit are the two figures a bar's value slot cannot hold (D-031).
 
 ## Threading
 
@@ -110,8 +139,9 @@ sharing is one-directional: the hop path is the ring's only writer and takes no 
 ## Build and test
 
 ```bash
-cmake --build build/release --target vstplug_VST3 -j4      # also vstplug_Standalone
-find build -name '*.vst3'                                   # verify the artefact path, don't guess
+R="${BUILD_ROOT:-build}/release"
+cmake --build "$R" --target vstplug_VST3 -j4      # also vstplug_Standalone
+find "$R" -name '*.vst3'                           # verify the artefact path, don't guess
 ```
 
 Shell behaviour is decided by `OfflineRender` (sections §5.19–§5.23), `ShellTests` and
@@ -119,4 +149,6 @@ Shell behaviour is decided by `OfflineRender` (sections §5.19–§5.23), `Shell
 
 ## Decisions
 
-D-001, D-002, D-011, D-021, D-022, D-023, D-026, D-027, F-025 — `docs/decisions.md`.
+D-001, D-002, D-011, D-021, D-022, D-023, D-026, D-027, D-031 (the placement pass reads measurements), D-038
+(the `[0, 1]` dial, its default and the pin), F-025,
+F-031 — `docs/decisions.md`.

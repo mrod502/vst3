@@ -278,14 +278,12 @@ public:
         inner->processHop(a, b, wetPtrs.data(), numChannels);
 
         const engine::MixWeights weights = engine::mixLawWeights(blend);
-        const float dryToA = blend < 0.0f ? 1.0f : 0.0f;
-        const float coefA = gain * (beta * weights.dry * dryToA + (1.0f - beta));
-        const float coefB = gain * (beta * weights.dry * (1.0f - dryToA));
+        const float coefA = gain * (beta * weights.dry + (1.0f - beta));
         const float coefWet = gain * (beta * weights.wet);
 
         for (int channel = 0; channel < numChannels; ++channel)
             for (int i = 0; i < config.hop; ++i)
-                out[channel][i] = coefA * a[channel][i] + coefB * b[channel][i]
+                out[channel][i] = coefA * a[channel][i]
                                   + coefWet * wet[static_cast<std::size_t>(channel)]
                                                     [static_cast<std::size_t>(i)];
     }
@@ -348,8 +346,8 @@ void storeWindow(const Streams& window, Streams& stream, int position, int hop)
                 window[channel][static_cast<std::size_t>(i)];
 }
 
-/** Runs `hops` hops with dry A at exactly 1.0, dry B at zero and a silent wet path. Under those,
-    out = coefA * 1 + coefB * 0 + coefWet * 0 = coefA, so the returned stream is the dry coefficient
+/** Runs `hops` hops with dry A at exactly 1.0, a silent sidechain and a silent wet path. Under
+    those, out = coefA * 1 + coefWet * 0 = coefA, so the returned stream is the dry coefficient
     trajectory itself and a ramp's landing is read off it rather than inferred. */
 Streams probeTrajectory(engine::MixEngine& engine, int hops)
 {
@@ -517,7 +515,64 @@ TEST_CASE("the law's weight table holds over every dial position the parameter c
     CHECK(std::abs(literalWetWeightAtFullTravel) > 1e-8f);
 }
 
-TEST_CASE("the settled dial positions hand back dry A, the wet stream and dry B, bit-exactly")
+TEST_CASE("no reachable dial position reaches dry B and the dry path carries the gain exactly")
+{
+    /* The domain the shell can ask for (D-038): q over [0, 1] at blendStep = 1/128, which
+       effectiveBlend shifts to p over [-1, 0]. Restated locally because the engine library may not
+       read a JUCE-side header; walked on the dyadic step so every position denotes exactly. */
+    constexpr float kDialStep = 1.0f / 128.0f;
+    constexpr int kSteps = 129;
+    constexpr int channels = 2;
+    CHECK(-1.0f + static_cast<float>(kSteps - 1) * kDialStep == 0.0f);
+
+    /* Dry B has no route to the output: A and the wet stream are silent here, so any non-zero sample is
+       the sidechain bus reaching the sum. The law this replaced did exactly that at every p > 0. */
+    const Streams silentA = constantStream(channels, kHop, 0.0f);
+    const Streams liveB = makeInputs(channels, kHop, 0);
+    for (int index = 0; index < kSteps; ++index)
+    {
+        const float p = -1.0f + static_cast<float>(index) * kDialStep;
+        engine::MixEngine engine(std::make_unique<SilentEngine>());
+        engine.setBlendTarget(p);
+        engine.prepare(makeConfig(channels, 96));
+
+        Streams out = zerosLike(silentA);
+        const Pointers pointers = pointersFor(silentA, liveB, out);
+        engine.processHop(pointers.a.data(), pointers.b.data(), pointers.out.data(), channels);
+        for (int channel = 0; channel < channels; ++channel)
+            for (int i = 0; i < kHop; ++i)
+            {
+                INFO("p=" << p << " ch=" << channel << " i=" << i);
+                CHECK(out[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)] == 0.0f);
+            }
+    }
+
+    /* At p = -1 the wet weight is exactly zero and the dry weight exactly the gain — the engine-level
+       half of c1. The stub's wet stream is non-zero at every sample and B carries content, so neither
+       coefficient can pass by landing on a zero of its own input. */
+    constexpr float kGainDb = -6.0f;
+    const float linear = static_cast<float>(std::pow(10.0, static_cast<double>(kGainDb) / 20.0));
+    const Streams halfA = constantStream(channels, kHop, 0.5f);
+    engine::MixEngine endpoint(std::make_unique<StubEngine>());
+    endpoint.setBlendTarget(-1.0f);
+    endpoint.setOutputGainTarget(kGainDb);
+    endpoint.prepare(makeConfig(channels, 96));
+
+    Streams endpointOut = zerosLike(halfA);
+    const Pointers endpointPointers = pointersFor(halfA, liveB, endpointOut);
+    endpoint.processHop(endpointPointers.a.data(), endpointPointers.b.data(),
+                        endpointPointers.out.data(), channels);
+    for (int channel = 0; channel < channels; ++channel)
+        for (int i = 0; i < kHop; ++i)
+        {
+            INFO("ch=" << channel << " i=" << i << " want " << linear * 0.5f
+                       << " from the gain alone, no trace of the wet stream or of B");
+            CHECK(endpointOut[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]
+                  == linear * 0.5f);
+        }
+}
+
+TEST_CASE("the settled dial positions hand back dry A and the wet stream bit-exactly")
 {
     const int channels = 2;
     const Streams a = makeInputs(channels, kHop, 0);
@@ -529,8 +584,10 @@ TEST_CASE("the settled dial positions hand back dry A, the wet stream and dry B,
         const char* what;
     };
 
-    for (const Dial dial : {Dial{-1.0f, "p = -1 is dry A"}, Dial{0.0f, "p = 0 is the wet stream"},
-                            Dial{1.0f, "p = +1 is dry B"}})
+    /* p = +1 is gone from this table: the shell's [0, 1] dial maps to [-1, 0] (D-038), so dry B is
+       not a position the stage can be asked for. mixLawWeights keeps its p = +1 row — the case above
+       that walks the function itself still covers it. */
+    for (const Dial dial : {Dial{-1.0f, "p = -1 is dry A"}, Dial{0.0f, "p = 0 is the wet stream"}})
     {
         auto stub = std::make_unique<StubEngine>();
         StubEngine* observed = stub.get();
@@ -553,9 +610,7 @@ TEST_CASE("the settled dial positions hand back dry A, the wet stream and dry B,
                     const float want =
                         dial.position < 0.0f
                             ? a[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]
-                            : (dial.position > 0.0f
-                                   ? b[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]
-                                   : wet);
+                            : wet;
                     INFO(dial.what << " call=" << call << " ch=" << channel << " i=" << i);
                     CHECK(out[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]
                           == want);
@@ -565,7 +620,7 @@ TEST_CASE("the settled dial positions hand back dry A, the wet stream and dry B,
     }
 }
 
-TEST_CASE("with a silent wet path the stage outputs exactly the dry bus the dial selects")
+TEST_CASE("with a silent wet path the stage outputs dry A at the law's weight")
 {
     const int channels = 2;
     const Streams content = makeInputs(channels, kHop, 0);
@@ -582,7 +637,7 @@ TEST_CASE("with a silent wet path the stage outputs exactly the dry bus the dial
                          Case{&content, &silence, "B silent"},
                          Case{&silence, &silence, "both silent"}})
     {
-        for (const float dial : {-1.0f, -0.75f, 0.0f, 0.5f, 1.0f})
+        for (const float dial : {-1.0f, -0.75f, -0.5f, -0.25f, 0.0f})
         {
             engine::MixEngine engine(std::make_unique<SilentEngine>());
             engine.setBlendTarget(dial);
@@ -593,19 +648,15 @@ TEST_CASE("with a silent wet path the stage outputs exactly the dry bus the dial
             engine.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
 
             /* The wet hop of a silent pair is silence by the inner engine's own contract, so what is
-               left is the selected dry bus at its law weight — exact zeros where that bus is silent,
-               never a noise floor and never a NaN. One multiply, so the expectation is bit-exact. */
+               left is dry A at its law weight — exact zeros where that bus is silent, never a noise
+               floor and never a NaN. One multiply, so the expectation is bit-exact. B carries content
+               in two of the three rows precisely so a leak onto it cannot hide as a zero. */
             const engine::MixWeights weights = engine::mixLawWeights(dial);
             for (int channel = 0; channel < channels; ++channel)
                 for (int i = 0; i < kHop; ++i)
                 {
-                    const float dry = dial < 0.0f
-                                          ? (*c.a)[static_cast<std::size_t>(channel)]
-                                                 [static_cast<std::size_t>(i)]
-                                          : (dial > 0.0f
-                                                 ? (*c.b)[static_cast<std::size_t>(channel)]
-                                                        [static_cast<std::size_t>(i)]
-                                                 : 0.0f);
+                    const float dry =
+                        (*c.a)[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
                     INFO(c.what << " dial=" << dial << " ch=" << channel << " i=" << i);
                     CHECK(std::isfinite(out[static_cast<std::size_t>(channel)]
                                              [static_cast<std::size_t>(i)]));
@@ -650,18 +701,23 @@ TEST_CASE("prepare, reset and both delay figures forward unchanged, and both sna
     }
 
     observed->resetCalls = 0;
-    engine.setBlendTarget(1.0f); ///< starts a ramp away from -1
+    engine.setBlendTarget(0.0f); ///< starts a ramp away from -1
     engine.reset();              ///< the transport drops the buffered stream, and the ramp with it
     CHECK(observed->resetCalls == 1);
     CHECK(engine.latencySamples() == 96);
 
-    /* Snapped onto p = +1, where dry A carries nothing at all. A ramp would show A still
-       contributing here, and the probe's dry B is silence, so 0.0 on every sample is the snap. */
+    /* Snapped onto p = 0, the far end of the domain the dial can reach, where the dry weight is exactly
+       zero and the wet exactly one: the probe comes back as the stub's own wet stream, unblended. A
+       ramp still in travel would hand back a mix of the two instead. */
     probe = probeTrajectory(engine, 2);
+    const Streams probeA = constantStream(1, kHop, 1.0f);
+    const Streams probeB = constantStream(1, kHop, 0.0f);
     for (std::size_t i = 0; i < probe[0].size(); ++i)
     {
-        INFO("snapped onto +1 after reset i=" << i);
-        CHECK(probe[0][i] == 0.0f);
+        const float want = wetSample(probeA[0].data(), probeB[0].data(), static_cast<int>(i) / kHop,
+                                     0, static_cast<int>(i) % kHop);
+        INFO("snapped onto 0 after reset i=" << i);
+        CHECK(probe[0][i] == want);
     }
 
     engine.setBlendTarget(-1.0f);
@@ -724,9 +780,8 @@ TEST_CASE("a ramp lands on its target bit-exactly, at a sample count from its ow
         CHECK(monotoneNonIncreasing(trajectory));
     }
 
-    /* Bypass, 10 ms, measured at the law's centre where the probe stream is 1 - beta: settled
-       bypassed is exactly 1.0, which is the wet and dry-B terms sitting at exactly 0.0f rather than
-       asymptotically near it. */
+    /* Bypass, 10 ms, measured with the dial at q = 1 where the probe stream is 1 - beta: settled bypassed is
+       exactly 1.0, which is the wet term sitting at exactly 0.0f rather than asymptotically near it. */
     {
         engine::MixEngine engine(std::make_unique<SilentEngine>());
         engine.setBlendTarget(0.0f);
@@ -861,7 +916,7 @@ TEST_CASE("bypass is a crossfade onto dry A: bit-exact when settled, and the dia
         for (int i = 0; i < blockSamples; ++i)
         {
             INFO("bypassed ch=" << channel << " i=" << i);
-            ///< The wet and dry-B contributions reach exactly 0.0f, not asymptotically.
+            ///< The wet contribution reaches exactly 0.0f, not asymptotically.
             CHECK(bypassed[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]
                   == a[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]);
         }
@@ -958,7 +1013,7 @@ TEST_CASE("the stepped known-bad is the same law as the shipped one while the pa
     const Streams a = contentStream(channels, total, 0.0);
     const Streams b = contentStream(channels, total, 2.0);
 
-    for (const float dial : {-1.0f, -0.55f, 0.0f, 0.31f, 1.0f})
+    for (const float dial : {-1.0f, -0.75f, -0.55f, -0.25f, 0.0f})
         for (const float db : {-60.0f, -7.5f, 0.0f, 12.0f})
             for (const bool bypassed : {false, true})
             {
@@ -1138,7 +1193,7 @@ TEST_CASE("processHop allocates nothing, even while the parameters are moving")
     engine.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
 
     std::mt19937 rng(7U);
-    std::uniform_real_distribution<float> dial(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> dial(-1.0f, 0.0f);
     std::uniform_real_distribution<float> gainDb(-60.0f, 12.0f);
 
     long allocations = -1;
@@ -1157,53 +1212,48 @@ TEST_CASE("processHop allocates nothing, even while the parameters are moving")
     CHECK(observed->hopCalls == 57);
 }
 
-/** §2's claim that neither dry path needs a delay line: the scheduler's pre-fill alone places them
-    at host time +R, so a silent wet path has to come back as the selected dry bus delayed by
-    exactly R.
-    The R values all sit at or above the 96 samples the three pre-hop callbacks of H = 128 at
-    hostBlock = 32 drain before the first hop refills the ring. Below that the scheduler's
-    short-delivery assert is what fires — F-006, not the mix stage. */
-TEST_CASE("under HopScheduler both dry paths arrive at exactly the declared R")
+/** The dry path needs no delay line: the scheduler's pre-fill alone places it at host time +R, so a
+    silent wet path has to come back as dry A delayed by exactly R. Every R here is at least the 96
+    samples the pre-hop callbacks drain first, below which F-006's assert fires instead. */
+TEST_CASE("under HopScheduler the dry path arrives at exactly the declared R")
 {
     for (const int latency : {3 * kHostBlock, kHop, 4096})
-        for (const float dial : {-1.0f, 1.0f})
+    {
+        engine::MixEngine engine(std::make_unique<SilentEngine>());
+        engine.setBlendTarget(-1.0f);
+
+        engine::SchedulerConfig schedulerConfig;
+        schedulerConfig.engine = makeConfig(1, latency);
+        schedulerConfig.channels = 1;
+        schedulerConfig.sidechainChannels = 1;
+        schedulerConfig.maxHostBlock = kHostBlock;
+        schedulerConfig.map = engine::ChannelMap::resolve(1, 1, 1).map;
+
+        engine::HopScheduler scheduler(engine);
+        scheduler.prepare(schedulerConfig);
+
+        const int total = 40 * kHostBlock;
+        const Streams a = makeInputs(1, total, 0);
+        const Streams b = makeInputs(1, total, 777);
+        Streams out(1, std::vector<float>(static_cast<std::size_t>(total), 0.0f));
+
+        for (int position = 0; position < total; position += kHostBlock)
         {
-            engine::MixEngine engine(std::make_unique<SilentEngine>());
-            engine.setBlendTarget(dial);
-
-            engine::SchedulerConfig schedulerConfig;
-            schedulerConfig.engine = makeConfig(1, latency);
-            schedulerConfig.channels = 1;
-            schedulerConfig.sidechainChannels = 1;
-            schedulerConfig.maxHostBlock = kHostBlock;
-            schedulerConfig.map = engine::ChannelMap::resolve(1, 1, 1).map;
-
-            engine::HopScheduler scheduler(engine);
-            scheduler.prepare(schedulerConfig);
-
-            const int total = 40 * kHostBlock;
-            const Streams a = makeInputs(1, total, 0);
-            const Streams b = makeInputs(1, total, 777);
-            const Streams& dry = dial < 0.0f ? a : b;
-            Streams out(1, std::vector<float>(static_cast<std::size_t>(total), 0.0f));
-
-            for (int position = 0; position < total; position += kHostBlock)
-            {
-                const float* aIn = a[0].data() + position;
-                const float* bIn = b[0].data() + position;
-                float* outPtr = out[0].data() + position;
-                scheduler.process(&aIn, &bIn, &outPtr, 1, kHostBlock);
-            }
-
-            INFO("R=" << latency << " dial=" << dial);
-            for (int i = 0; i < total; ++i)
-            {
-                const float want =
-                    i < latency ? 0.0f : dry[0][static_cast<std::size_t>(i - latency)];
-                INFO("i=" << i);
-                CHECK(out[0][static_cast<std::size_t>(i)] == want);
-            }
+            const float* aIn = a[0].data() + position;
+            const float* bIn = b[0].data() + position;
+            float* outPtr = out[0].data() + position;
+            scheduler.process(&aIn, &bIn, &outPtr, 1, kHostBlock);
         }
+
+        INFO("R=" << latency);
+        for (int i = 0; i < total; ++i)
+        {
+            const float want =
+                i < latency ? 0.0f : a[0][static_cast<std::size_t>(i - latency)];
+            INFO("i=" << i);
+            CHECK(out[0][static_cast<std::size_t>(i)] == want);
+        }
+    }
 }
 
 /** A wet stream of one constant: the convolved path's DC component, which is the only thing the DC
@@ -1310,32 +1360,32 @@ TEST_CASE("the DC blocker empties the convolved stream and never reaches a dry b
         for (int call = 0; call < bound / kHop + 1; ++call)
             mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
 
-        /* At the centre the law hands through the wet stream alone, so a constant wet input has to
-           vanish inside the bound the stage itself documents. */
+        /* At p = 0 the law hands through the wet stream alone, so a constant wet input has to vanish
+           inside the bound the stage itself documents. */
         INFO("settling bound " << bound << " samples");
         CHECK(std::abs(out[0][kHop - 1]) <= 1e-6f);
         CHECK(std::abs(out[1][kHop - 1]) <= 1e-6f);
     }
 
-    for (const float dial : {-1.0f, 1.0f})
     {
+        /* One hop, so the blocker's own residue is still at full size underneath: the only way this
+           comes out bit-exact is `coefWet` being exactly zero and A never having been filtered. */
         engine::MixEngine mix(std::make_unique<ConstantWetEngine>(1.0f),
                               std::make_unique<dsp::DcBlocker>(),
                               std::make_unique<dsp::SoftClipper>());
-        mix.setBlendTarget(dial);
+        mix.setBlendTarget(-1.0f);
         mix.prepare(makeConfig(channels, 96));
 
         Streams out = zerosLike(a);
         const Pointers p = pointersFor(a, b, out);
         mix.processHop(p.a.data(), p.b.data(), p.out.data(), channels);
 
-        const Streams& want = dial < 0.0f ? a : b;
         for (int channel = 0; channel < channels; ++channel)
             for (int i = 0; i < kHop; ++i)
             {
-                INFO("dial=" << dial << " ch=" << channel << " i=" << i);
+                INFO("ch=" << channel << " i=" << i);
                 CHECK(out[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]
-                      == want[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]);
+                      == a[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)]);
             }
     }
 }
@@ -1387,12 +1437,9 @@ TEST_CASE("the clipper bounds the summed output, and reaches it through the gain
 
 TEST_CASE("the level stage moves neither delay figure, allocates nothing, and cannot reach a dry bus")
 {
-    /* Criteria C1, C2 and C6's engine-level halves, and the order proof for item 04's decision B. The same
-       programme runs through the shipped chain and through the shipped chain plus the stage, at each settled
-       dial position: bit-equal at p = -1 and p = +1, different at p = 0. The endpoints are the load-bearing
-       pair — `coefWet` is exactly zero there, so any difference means the correction leaked onto a bus the
-       dial hands straight through, which is what installing the stage below the law rather than in the shell
-       is supposed to make impossible. The midpoint leg keeps that claim from being vacuous. */
+    /* Criteria C1, C2 and C6's engine-level halves and item 04's order proof: the same programme through
+       the shipped chain with and without the stage. p = -1 is the load-bearing position — `coefWet` is
+       exactly zero there, so any difference is the correction leaking onto a bus the dial hands through. */
     const int channels = 2;
     const Streams a = makeInputs(channels, kHop, 0);
     const Streams b = makeInputs(channels, kHop, 5000);
@@ -1427,13 +1474,10 @@ TEST_CASE("the level stage moves neither delay figure, allocates nothing, and ca
         return result;
     };
 
-    for (const float dial : {-1.0f, 1.0f})
-    {
-        const Run bare = run(dial, false);
-        const Run staged = run(dial, true);
-        INFO("dial " << dial << " with the stage at its defaults, peak |gain| " << staged.peakGainDb << " dB");
-        CHECK(staged.out == bare.out);
-    }
+    const Run bare = run(-1.0f, false);
+    const Run staged = run(-1.0f, true);
+    INFO("p = -1 with the stage at its defaults, peak |gain| " << staged.peakGainDb << " dB");
+    CHECK(staged.out == bare.out);
 
     const Run wetBare = run(0.0f, false);
     const Run wetStaged = run(0.0f, true);
@@ -1731,9 +1775,8 @@ void checkOrderingOfBlockerAndLevelStage(float wetDc, double toleranceDb)
     const Streams a = fixtureA();
     const Streams b = fixtureB();
 
-    /* The pair no chain is ever handed, which is what the endpoint comparison below is against. */
+    /* The stream no chain is ever handed, which is what the endpoint comparison below is against. */
     const Streams masterA = fixtureA();
-    const Streams masterB = fixtureB();
 
     OrderingChain bare = makeOrderingChain(channels, wetDc, false, 0.0f);
     Streams blocked = zerosLike(a);
@@ -1851,13 +1894,12 @@ void checkOrderingOfBlockerAndLevelStage(float wetDc, double toleranceDb)
                   << " staged at unity, " << referenceResidue << " on the blocked reference\n";
     }
 
-    /* Criterion 4's second half: D-010's endpoints under a stage that a later M4 rewrite might be tempted
-       to move. `coefWet` is exactly zero at either endpoint, so the dry bus arrives bit for bit — against
-       the master copy, which no chain ever saw, because a chain that filtered the caller's A bus in place
-       would otherwise be compared with its own handiwork and called exact. */
-    for (const float dial : {-1.0f, 1.0f})
+    /* Criterion 4's second half: D-010's p = -1 endpoint under a stage that a later rewrite might be
+       tempted to move. `coefWet` is exactly zero there, so dry A arrives bit for bit — against the master
+       copy no chain ever saw, since a chain that filtered the caller's A bus in place would be compared
+       with its own handiwork and called exact. */
     {
-        OrderingChain endpoint = makeOrderingChain(channels, wetDc, true, dial);
+        OrderingChain endpoint = makeOrderingChain(channels, wetDc, true, -1.0f);
         const Streams endpointA = fixtureA();
         const Streams endpointB = fixtureB();
         Streams endpointOut = zerosLike(endpointA);
@@ -1866,15 +1908,14 @@ void checkOrderingOfBlockerAndLevelStage(float wetDc, double toleranceDb)
             const Pointers p = pointersAt(endpointA, endpointB, endpointOut, hop * kHop);
             endpoint.mix->processHop(p.a.data(), p.b.data(), p.out.data(), channels);
         }
-        const Streams& want = dial < 0.0f ? masterA : masterB;
         for (int channel = 0; channel < channels; ++channel)
             for (int i = 0; i < 4 * kHop; ++i)
             {
-                INFO("dial " << dial << " ch " << channel << " i " << i << ": staged endpoint "
-                             << endpointOut[channel][static_cast<std::size_t>(i)] << " against "
-                             << want[channel][static_cast<std::size_t>(i)]);
+                INFO("ch " << channel << " i " << i << ": staged endpoint "
+                           << endpointOut[channel][static_cast<std::size_t>(i)] << " against "
+                           << masterA[channel][static_cast<std::size_t>(i)]);
                 CHECK(endpointOut[channel][static_cast<std::size_t>(i)]
-                      == want[channel][static_cast<std::size_t>(i)]);
+                      == masterA[channel][static_cast<std::size_t>(i)]);
             }
     }
 }

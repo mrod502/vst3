@@ -4,6 +4,7 @@
 #include <Grid.hpp>
 #include <Palette.hpp>
 #include <PieGeometry.hpp>
+#include <TextFit.hpp>
 #include <TextGeometry.hpp>
 #include <TypeRamp.hpp>
 
@@ -79,11 +80,54 @@ public:
         typeface's own "H", so a substituted face sits at its own offset; that difference is recorded
         per host, not tuned away (risk 5).
 
-        Horizontal placement follows horizontalLayout's own flags, measured from capTop.x to the
-        right edge of the current clip. Vertical flags are ignored: the caller has already said where
-        the text goes. */
+        `maxWidthPx` is the box the caller was given, not the current clip: a layout width derived from
+        the clip is how a word silently loses the end of itself, and the guarantee that it does not
+        lives upstream of the paint, in the fit pass (`ui::TextFit`). Horizontal placement follows
+        `horizontalLayout`'s own flags inside that width; vertical flags are ignored, because the caller
+        has already said where the text goes.
+
+        Digits are laid at one pitch — the widest digit advance for the role — so a value that changes
+        does not change width and a row never reflows under a dragging dial (D-037). */
     void drawCapAlignedText (juce::Graphics& g, const juce::String& text, TypeRole role, float k,
-                            juce::Point<int> capTop, juce::Justification horizontalLayout);
+                            juce::Point<int> capTop, int maxWidthPx,
+                            juce::Justification horizontalLayout);
+
+    /** One run measured for the placer: its ink, its line count inside `maxWidthPx`, and the em a
+        wrapped line is laid one below the last.
+
+        Message thread only, and cached per (string, role, k), so a resize pass measures each run once.
+        `paint()` never calls this — the split in `01` §0 B, and the reason `capPx` comes from the glyph
+        outline rather than `getAscent()`, which on this face is 0.890 em against a 0.670 em cap. */
+    struct MeasuredRun
+    {
+        TextExtent extent;
+        int lineCount{1};
+        /* The em a wrapped line is laid one below the last, unrounded: a placer that rounds each edge once and a
+           leg that rounds every pitch differ by a pixel per line otherwise, and the sheet has no pixel to spare. */
+        double lineHeightPx{};
+    };
+
+    [[nodiscard]] MeasuredRun measureText (const juce::String& text, TypeRole role, float k);
+
+    /** The same run measured as it would be laid inside `maxWidthPx`, so the placer reserves the lines a wrap
+        will actually make rather than the one it hopes for. Cached per (string, role, k, width). */
+    [[nodiscard]] MeasuredRun measureRun (const juce::String& text, TypeRole role, float k, int maxWidthPx);
+
+    /** How many runs this instance has actually measured — the leg that keeps "the fit pass caches" a
+        fact rather than a comment. */
+    [[nodiscard]] int measureCount () const noexcept { return measures; }
+
+    /** The bar label column in force, px: the shell's measured answer from its layout pass, or the
+        millimetre figure before the first pass.
+
+        One carrier because three things read it — the painted body, the value's start and the pointer's
+        mapping — and two numbers is the defect `01` risk 1 describes. `getSliderLayout` is JUCE's single
+        source for the first and third, so it reads this. */
+    void setLabelColumnPx (int px) noexcept { labelColumn = px; }
+    [[nodiscard]] int labelColumnPx (double k) const noexcept
+    {
+        return labelColumn > 0 ? labelColumn : BarGeometry::labelColumnAt (k);
+    }
 
     /** JUCE's squeeze floor as this theme saw it, for the leg that prints it. */
     [[nodiscard]] float squeezeFloorAtConstruction () const noexcept { return floorAtConstruction; }
@@ -211,20 +255,51 @@ private:
         float k;
         juce::Font font;
         float capHeight;
+        /* The pitch every digit in this role's text is laid at: the widest digit advance. Measured once
+           with the font, so the paint reads a number rather than shaping ten of them. */
+        float digitPitch;
     };
 
     [[nodiscard]] const Entry& entryFor (TypeRole role, float k);
+
+    /** Shapes `text` once and re-spaces it: digits at the entry's pitch, a line that would pass
+        `maxWidthPx` broken at its last space, the whole block justified inside the box.
+
+        One shaping pass for the whole run — a pass per line is what `drawMultiLineText` does and the kit
+        is trying not to allocate more than that — and the same function behind both the paint and
+        `measureText`, so the leg measures the layout that is drawn rather than a lookalike. */
+    void layoutRun (juce::GlyphArrangement& into, const Entry& entry, const juce::String& text,
+                    double left, double baselineFirstLine, int maxWidthPx,
+                    juce::Justification horizontal, double& advanceOut, int& lineCountOut);
 
     /* Pre-allocated and fixed: the callback rules in AGENTS §7 apply to paint()) too, so the cache
        never grows. Seven roles by four distinct k values; the design has one k, so it is warm after
        the first frame and the round-robin slot below is never reached in practice. */
     static constexpr std::size_t kCacheSlots = ui::kRoleCount * 4;
 
+    /* The measured runs, in the same fixed-slot shape as the font cache: the sheet's words are a dozen
+       static strings plus whatever the readouts currently say, and a resize must not grow anything.
+       Round-robin, message-thread confined, and `measureText` is the only writer. */
+    struct MeasureEntry
+    {
+        juce::String text;
+        TypeRole role{};
+        float k{};
+        int maxWidthPx{};
+        MeasuredRun run;
+    };
+
+    static constexpr std::size_t kMeasureSlots = 32;
+
     ColourScheme schemeInForce;
     std::array<std::optional<Entry>, kCacheSlots> fontCache;
+    std::array<std::optional<MeasureEntry>, kMeasureSlots> measureCache;
     std::size_t nextSlot{};
+    std::size_t nextMeasureSlot{};
     int builds{};
+    int measures{};
     float floorAtConstruction{};
+    int labelColumn{};
 
     /* The kit's one window scale, px per mm. Message-thread confined like the font cache above: paint()
        reads it and only setScale() writes it, from the editor's layout pass. */
@@ -236,5 +311,10 @@ private:
     juce::Path discPath;
     juce::Path wedgePath;
     juce::Path radialPath;
+
+    /* The one run of glyphs being laid out, reused for the same reason: `GlyphArrangement::clear()` keeps
+       the array's capacity, so a repaint shapes into storage that already exists. Message-thread confined,
+       and never held across a call — the paint draws it and is done. */
+    juce::GlyphArrangement scratch;
 };
 }

@@ -29,6 +29,10 @@ Harnesses, test programs and measurement instruments. Nothing here ships.
 - **Cost and footprint programs are not assertions.** `CpuBaseline` and `PrepareFootprint` print figures
   and exit 0; wall-clock and byte counts on a shared host are not pass/fail signals, which is why they
   stay out of CTest.
+- **A second instrument for a second reader goes in `tools/harness/` as a header.** `FontNameTable.hpp`
+  reads a face's `name`, `head`, `hhea` and `cmap` tables out of raw bytes, so a leg can weigh what JUCE
+  reports (and which glyphs it thinks exist) against what the file says; header-only means it rides the
+  harness include path with no archive to update.
 - **A filtered run that matched nothing exits 0.** Filter on case-name prefixes, never target names:
   `ctest -R OfflineRender` and `ctest -R ShellTests` select zero tests and pass. The two run sets are
   quick = `ctest --test-dir build/<config> -E "OfflineRender|cross product long"` and long =
@@ -42,10 +46,11 @@ Harnesses, test programs and measurement instruments. Nothing here ships.
 ## Build and test
 
 ```bash
-cmake --build build/release --target OfflineRender ShellTests CrossProductTests -j4
-ctest --test-dir build/release -R OfflineRender --output-on-failure
-ctest --test-dir build/release -E "OfflineRender|cross product long" --output-on-failure
-./build/release/tools/PrepareFootprint_artefacts/Release/PrepareFootprint
+R="${BUILD_ROOT:-build}/release"
+cmake --build "$R" --target OfflineRender ShellTests CrossProductTests -j4
+ctest --test-dir "$R" -R OfflineRender --output-on-failure
+ctest --test-dir "$R" -E "OfflineRender|cross product long" --output-on-failure
+"$R/tools/PrepareFootprint_artefacts/Release/PrepareFootprint"
 ```
 
 `OfflineRender`'s sections: §5.1–§5.18 the DSP and lifecycle anchors, §5.19 the re-prepare guard inside
@@ -54,5 +59,28 @@ a real `setBusesLayout`, §5.20 the channel matrix, §5.21 the layout report, §
 getters on a transport that has stopped, the window the shell sized at prepare, the derived axes, the
 spread figure recorded rather than judged, `idle`, the counted half of a quiet tick, and the three
 components in the cells `03` left empty.
+
+**§5.22 is where the sheet's words are decided**, in three of its legs. *C1 measures every word against the room
+the `paint()` gives it* — 75 rows at 595, 1190 and 2380 px: the six `ui::Text`, four bar labels and their values,
+three rotated captions, two choice-bar items, the meter's number — through `ui::Theme::measureText`, the same
+`GlyphArrangement` route the paint takes, gated at **zero** deficit. Room is never the component's own rect: a
+rotated caption's is `ui::RotatedPlacement::extentPx`, a bar label's is the label column, a value's is the body less
+the inset; vertically it is `ui::stackReservePx` (first line's ink plus one unrounded pitch per extra line) against
+the reserve the placer handed the box. The same section prints the squeeze each role asked for against the scale the
+font carries, and the digit pairs (`1024` against `8192`) both pitched and unpitched. *C9 walks the words*: the
+blend, grain and layout sentences against the strings that write them, then the naming table — every control's own
+word, and the rule that no control ships unnamed. *The face row* prints each embedded face's PostScript name
+(`nameID 6`, read out of the bytes with `tools/harness/FontNameTable.hpp`, because JUCE reports the typographic pair
+instead), cap/x/hhea per em against what draws, the ten digit advances, and per role the cap against the figure the
+previous face produced (F-030, D-037).
+
+*The dial's legs are the blend's, and D-038 re-asked all four against a `proportional` dial.* C2 asserts the
+`blend` control is the proportional one; C3 counts the pixels no *pair* of tokens can make and requires every one
+of them on the live dial — the wedge's antialiased edge over the face over the sheet — with none on the inert one;
+C5 walks `q ∈ {0, 0.25, 0.5, 0.75, 1}` requiring a sweep within 0.001 turn of `q`, fill strictly growing, **zero**
+`ink` inside the disc at every position and a plain `track` face at `q = 0`; C9 compares the readout's sentences
+verbatim, the no-sidechain pin clause included. The blend value any leg writes goes through
+`harness::setBlendDial`, which fails the run on a figure outside `[0, 1]` rather than letting a leftover `p` read
+as a legal `q`.
 §5.21 swaps the installed `juce::Logger` for a counting one, so it runs last and `main()` filters the
 log to keep the other sections' output byte-identical between runs.

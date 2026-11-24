@@ -23,8 +23,8 @@ WedgeAngles PieDial::wedge()
 {
     const double proportion = valueToProportionOfLength (getValue());
 
-    /* A datumAtZero dial is the blend's signed dial whatever its endpoints are, so the signed value is
-       recovered from the proportion rather than assumed to be the raw parameter. */
+    /* A datumAtZero dial is signed whatever its endpoints are, so the signed value is recovered from the
+       proportion rather than assumed to be the raw parameter. */
     return mode == PieMode::datumAtZero ? wedgeAngles (proportion * 2.0 - 1.0, mode)
                                         : wedgeAngles (proportion, mode);
 }

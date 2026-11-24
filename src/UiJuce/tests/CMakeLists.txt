@@ -14,7 +14,9 @@ target_compile_definitions(UiJuceTests PRIVATE CATCH_AMALGAMATED_CUSTOM_MAIN=1)
 # The criterion-7 leg reads Theme.hpp's own text to prove the two inherited slot setters are shadowed
 # private — a requires-expression cannot ask about access, so the mechanism is what the leg can see.
 target_compile_definitions(UiJuceTests PRIVATE ENTANGLE_SRC_DIR="${CMAKE_SOURCE_DIR}/src")
-target_include_directories(UiJuceTests PRIVATE ${entangle_catch2_SOURCE_DIR}/extras)
+target_include_directories(UiJuceTests PRIVATE ${entangle_catch2_SOURCE_DIR}/extras
+    # The sfnt reader behind the face legs: header-only, no JUCE, and the only route to nameID 6 (F-030).
+    ${CMAKE_SOURCE_DIR}/tools/harness)
 target_link_libraries(UiJuceTests PRIVATE UiJuce)
 
 catch_discover_tests(UiJuceTests)

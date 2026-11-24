@@ -48,12 +48,17 @@ inline MixWeights mixLawWeights(float p) noexcept
 
         out = g * [ beta * ( w_dry * dry + w_wet * conv ) + (1 - beta) * A ]
 
-    with `w_dry`/`w_wet` from mixLawWeights, `dry` the dry A bus for p < 0 and the dry B bus for
-    p >= 0, `g` the output gain (0 dB is exactly 1.0f) and `beta` the effect coefficient, 1 in the
-    effect and 0 bypassed onto dry A. All three coefficients are ramped in the output-sample domain,
-    so their trajectories depend on absolute sample position and never on a host callback.
+    with `w_dry`/`w_wet` from mixLawWeights, `dry` the dry A bus, `g` the output gain (0 dB is exactly
+    1.0f) and `beta` the effect coefficient, 1 in the effect and 0 bypassed onto dry A. All three
+    coefficients are ramped in the output-sample domain, so their trajectories depend on absolute sample
+    position and never on a host callback.
 
-    Both dry signals are the hop the scheduler is draining, so they reach the host at exactly R like
+    The shell hands in `p = q - 1`, so the domain it can reach is [-1, 0] and the dry bus is always A:
+    dry B reaches the output at no position (D-038). `mixLawWeights` is unchanged and still correct over
+    the whole [-1, 1] — the law is a function of `p`, not of what the dial can address — and this class
+    simply never asks it for a positive argument.
+
+    The dry bus is the hop the scheduler is draining, so it reaches the host at exactly R like
     everything else in the drained stream: this class adds no delay line, which is why prepare,
     reset, latencySamples and wetDelaySamples forward to the inner engine untouched. The wet stream
     is never additionally delayed, and the law contributes no gain of its own — the inner engine's
@@ -113,7 +118,8 @@ public:
     void processHop(const float* const* a, const float* const* b, float* const* out,
                     int numChannels) override;
 
-    /** @param dialPosition p in [-1, 1]: negative blends dry A, positive dry B, 0 is pure wet. */
+    /** @param dialPosition p in [-1, 0] — the law position the shell derives from the dial: -1 is dry
+        A, 0 is pure convolution. Positive `p` is legal to the law and unreachable from the product. */
     void setBlendTarget(float dialPosition) noexcept;
 
     /** @param decibels output gain; 0 dB is exactly unity. Converted once here, never per sample. */
@@ -204,13 +210,9 @@ private:
     std::unique_ptr<dsp::SoftClipper> outputClipper;
     EngineConfig config;
 
-    Ramp blendRamp{0.0f}; ///< dial position: the centre, which is the parameter's own default
+    Ramp blendRamp{0.0f}; ///< law position: p = 0, which is what the dial's default q = 1 maps to
     Ramp gainRamp{1.0f};  ///< linear output gain: unity, so an ungained stage is not silenced
     Ramp bypassRamp{1.0f}; ///< effect coefficient: 1 fully in the effect, 0 bypassed onto dry A
-
-    /** Sign of the last dial position the ramp produced, before any zero-crossing snap: the dry bus
-        swaps where its weight is exactly zero, and never anywhere else. */
-    float previousBlend = 0.0f;
 
     /** One hop per channel of wet scratch, sized in prepare only: the same rule that keeps
         HopScheduler's pointer arrays stable for the whole audio thread. */
@@ -218,9 +220,8 @@ private:
     std::vector<float*> scratchPtrs;
 
     /** Per-output-sample coefficients, one hop deep each, rebuilt once per hop and applied to
-        every channel identically: out = coefA * a + coefB * b + coefWet * conv. */
+        every channel identically: out = coefA * a + coefWet * conv. */
     std::vector<float> coefA;
-    std::vector<float> coefB;
     std::vector<float> coefWet;
 
     /** The display's window on the level stage, and the position stamped on each publication. Written only

@@ -73,7 +73,7 @@ entangle layout prepares=1 skipped=0 inBuses=2 outBuses=1 mainIn=1 mainInName=[M
 | `R` | `getLatencySamples()` | what the host compensates (D-004). P7 compares this against the host's own display |
 | `block` | `hostBlock / maxHostBlockFor(hostBlock)` | D-022 A's floor, visible: `2048/4096` says the host runs 2048-sample callbacks and the rings were sized for 4096 |
 | `sideActive` | the shell's cached flag | the pin's input. `sideEn=1 sideActive=0` would be a bug — it means the bus is enabled but empty |
-| `blendEff` | `effectiveBlendPosition()` | the blend the law is at (D-011): `-1.000` with no send is the pin, not the dial |
+| `blendEff` | `effectiveBlendPosition()` | the law position `p = q - 1` the shell actually runs (D-011, D-038): `0.000` is the shipped default `q = 1` — the convolution — and `-1.000` with no send is the pin, not the dial |
 
 **Where the plan's format differs from this.** Plan `08` §2.1 shows `mainIn=1[Mono]`; the shipped line splits the
 name into its own `mainInName=[Mono]` field. The reason is parsing, not looks: a bracketed value glued to a

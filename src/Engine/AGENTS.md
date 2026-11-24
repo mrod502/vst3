@@ -33,16 +33,24 @@ channels, never a bus width — so per-channel state is keyed by index, not by a
 
 ## MixEngine
 
-`out = clip( g · [ β · ( w_dry · dry + w_wet · block(conv) ) + (1 − β) · A ] )`, with `t = |p|` on the
-blend dial `p ∈ [-1, 1]`, `w_dry = sinf(t·π/2)`, `w_wet = cosf(t·π/2)`, `β` the bypass crossfade and
-`g` the gain dial converted from dB. The dry bus is A for `p < 0` and B otherwise; the handover at
-`p == 0` is silent because `w_dry == 0`. `mixLawWeights` snaps `t == 0` to (0, 1) and `t >= 1` to
-(1, 0), because `cosf(pi/2f)` is `-4.37e-08` and a wet term surviving at a hard-dry dial makes
-"±1 is the pure dry render" unmeasurable. The no-sidechain pin that forces `p = -1` is the shell's
-(`EngineChain.h`), not this stage's.
+`out = clip( g · [ β · ( w_dry · A + w_wet · block(conv) ) + (1 − β) · A ] )`, with `t = |p|`,
+`w_dry = sinf(t·π/2)`, `w_wet = cosf(t·π/2)`, `β` the bypass crossfade and `g` the gain dial converted
+from dB. The shell hands `p = q − 1` from its `[0, 1]` dial, so **the domain this stage is ever asked
+for is `p ∈ [-1, 0]` and the dry bus is always A** — dry B reaches the output at no position, and there
+is no dry-bus selection left in the coefficient fill (D-038). `mixLawWeights` is a function of `p` over
+the whole `[-1, 1]` and must stay correct at both signs even though the dial cannot reach them. It snaps
+`t == 0` to (0, 1) and `t >= 1` to (1, 0), because `cosf(pi/2f)` is `-4.37e-08` and a wet term surviving
+at a hard-dry dial makes "the dry endpoint is the pure dry render" unmeasurable. The no-sidechain pin
+that forces `p = -1` is the shell's (`EngineChain.h`), not this stage's.
+
+| `p` | the dial | `w_dry` | `w_wet` | the sum holds |
+|---|---|---|---|---|
+| `-1` | `q = 0` | 1 | 0 exactly | dry A, bit-exact |
+| `-0.5` | `q = 0.5` | √2⁄2 | √2⁄2 | equal power |
+| `0` | `q = 1`, the default | 0 exactly | 1 | the convolution alone |
 
 - **Chain order is fixed:** `conv → DcBlocker → LevelNormalizer → sum → g → SoftClipper`. Only
-  `conv` passes through the stages — A and B reach the sum unfiltered, which keeps the ±1 endpoints
+  `conv` passes through the stages — A reaches the sum unfiltered, which keeps the `p = -1` endpoint
   bit-exact. Blocker-before-normalizer is load-bearing: swapped, the normalizer reads the DC inside
   its envelope and applies the reciprocal gain instead of the tone ratio.
 - **A stage that is not installed is not applied at all.** The blocker and clipper come from the
@@ -234,4 +242,5 @@ There those three legs report Skipped and the counted legs still run. What the g
 
 ## Decisions
 
-D-004, D-010, D-011, D-017, D-018, D-021, D-022, D-027 — `docs/decisions.md`.
+D-004, D-010, D-011, D-017, D-018, D-021, D-022, D-027, D-038 (the law's reachable domain is `[-1, 0]`) —
+`docs/decisions.md`.

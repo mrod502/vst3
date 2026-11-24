@@ -9,12 +9,11 @@ namespace ui
 /** A `track` face with a `fill` wedge, no needle, no ring, no ticks and no outline.
 
     A rotary `juce::Slider` — the drag, the wheel, the arrow keys, the attachment and the automation come
-    with it, and `Theme::drawRotarySlider` replaces everything JUCE would otherwise draw (`02` §0 A). The
-    two modes are the two laws the product needs a dial for: `proportional` is the mockup's, one full turn
-    from a 6 o'clock datum; `datumAtZero` is the blend's, growing clockwise for a positive request and
-    counter-clockwise for a negative one from a 12 o'clock datum, with the single `ink` radial that is the
-    only dark mark the design permits on a control — because the wedge's size alone cannot say where
-    "wet only" is.
+    with it, and `Theme::drawRotarySlider` replaces everything JUCE would otherwise draw (`02` §0 A).
+    `proportional` is the mockup's rule, one full turn from a 6 o'clock datum, and is what `blend` ships
+    with; `datumAtZero` grows each way from a 12 o'clock datum and carries the single `ink` radial the
+    design permits on a control — which no shipped control asks for, D-038 having put the state a wedge
+    cannot show at its ends into the readout's words instead.
 
     The angles handed to `setRotaryParameters` come from `PieGeometry`, so the drag and the painting agree
     on where a value lives; the widget does arithmetic with nothing else. */

@@ -1,6 +1,8 @@
 #include <FontFactory.hpp>
 #include <Theme.hpp>
 
+#include <FontNameTable.hpp>
+
 #include <catch_amalgamated.hpp>
 
 #include <juce_graphics/juce_graphics.h>
@@ -71,7 +73,8 @@ void drawWithTheme(ui::Theme& theme, const juce::String& text, ui::TypeRole role
 {
     juce::Graphics g(image);
     g.setColour(ui::toColour(ui::kInk));
-    theme.drawCapAlignedText(g, text, role, k, {kInkX, capTopRow}, juce::Justification::left);
+    theme.drawCapAlignedText(g, text, role, k, {kInkX, capTopRow}, kCanvasWidth - kInkX,
+                             juce::Justification::left);
 }
 
 /** The mistake spec §2 names: placing by the em box — a baseline laid out from a metric of the box rather
@@ -324,8 +327,8 @@ TEST_CASE("ui: skin: the squeeze is applied, and JUCE's floor is on record")
 
     CHECK(theme.fontFor(ui::TypeRole::barLabel, 3.0f).getHorizontalScale() == Catch::Approx(0.65f));
     CHECK(label.getHorizontalScale() == Catch::Approx(0.65f));
-    CHECK(theme.fontFor(ui::TypeRole::barValue, 1.0f).getHorizontalScale() == Catch::Approx(1.10f));
-    CHECK(theme.fontFor(ui::TypeRole::caption, 1.0f).getHorizontalScale() == Catch::Approx(1.00f));
+    CHECK(theme.fontFor(ui::TypeRole::barValue, 1.0f).getHorizontalScale() == Catch::Approx(0.70f));
+    CHECK(theme.fontFor(ui::TypeRole::caption, 1.0f).getHorizontalScale() == Catch::Approx(0.67f));
 
     SECTION("and 0.65 really does draw narrower than 1.0")
     {
@@ -349,6 +352,40 @@ TEST_CASE("ui: skin: the squeeze is applied, and JUCE's floor is on record")
        this does record — a 0.65 face drawn with drawFittedText may be squeezed to 0.455 — is F-022's. */
     CHECK(floor > 0.65f);
     CHECK(floor <= 1.0f);
+}
+
+TEST_CASE("ui: skin: the fit pass caches, so a resize measures each run once")
+{
+    /* Criterion 8's other half: the placer may run on every resize, so a run it asks for twice must be shaped
+       once. A cache keyed on the string alone would also pass this — the width is part of the key because the
+       verdict is the wrap *inside that box*, and two boxes are two verdicts. */
+    ui::Theme theme;
+    const int before = theme.measureCount ();
+
+    (void) theme.measureText ("Adj", ui::TypeRole::barLabel, 1.0f);
+    (void) theme.measureText ("Adj", ui::TypeRole::barLabel, 1.0f);
+    (void) theme.measureRun ("Window Size", ui::TypeRole::caption, 1.0f, 264);
+    (void) theme.measureRun ("Window Size", ui::TypeRole::caption, 1.0f, 264);
+    CHECK (theme.measureCount () == before + 2);
+
+    (void) theme.measureRun ("Window Size", ui::TypeRole::caption, 1.0f, 132);
+    CHECK (theme.measureCount () == before + 3);
+
+    SECTION("and the wrap the cache reports is the wrap the box makes")
+    {
+        /* Widths taken off the run's own advance — 316.6 px for this string at the shipped window — so the pair
+           says "the box it fits" and "half that" at whatever scale the ramp is read at. */
+        const int oneLine = static_cast<int> (std::ceil (
+            theme.measureText ("8192 samples = 170.7 ms", ui::TypeRole::micro, 1.0f).extent.advancePx));
+        const auto wide = theme.measureRun ("8192 samples = 170.7 ms", ui::TypeRole::micro, 1.0f, oneLine);
+        const auto tight = theme.measureRun ("8192 samples = 170.7 ms", ui::TypeRole::micro, 1.0f,
+                                             oneLine / 2);
+        CHECK (wide.lineCount == 1);
+        CHECK (tight.lineCount > 1);
+        /* The pitch is the em, not the cap: JUCE lays a wrapped line one em below the last, and the reserve is
+           counted in these, so a rounded pitch would move the stack a px per line. */
+        CHECK (wide.lineHeightPx == Catch::Approx (theme.fontFor (ui::TypeRole::micro, 1.0f).getHeight ()));
+    }
 }
 
 TEST_CASE("ui: skin: cap height, not the em box")
@@ -432,7 +469,8 @@ TEST_CASE("ui: skin: a font is built once per role and scale")
         juce::Image canvas = makeCanvas();
         juce::Graphics g(canvas);
         g.setColour(ui::toColour(ui::kInk));
-        theme.drawCapAlignedText(g, "Out", role, 1.0f, {kInkX, 30}, juce::Justification::left);
+        theme.drawCapAlignedText(g, "Out", role, 1.0f, {kInkX, 30}, kCanvasWidth - kInkX,
+                                 juce::Justification::left);
     }
     CHECK(theme.fontBuildCount() == afterPrepare);
 
@@ -451,18 +489,37 @@ TEST_CASE("ui: skin: a font is built once per role and scale")
 
 TEST_CASE("ui: skin: the face drawn is the face the design names")
 {
-    /* The identity, not a report. Until this leg could only print what the host had resolved,
-       because a family-name request is a question the host answers — and off macOS it answered with nothing
-       at all, JUCE 9 substituting for no unmatched family (F-022). The two weights are embedded now, so there
-       is no question left to refuse and the assertion is the plain one: the sheet draws Helvetica Neue, Thin
-       where the ramp says thin and Bold where it says bold, on every host. A face that comes back any other
-       name means the embedded data did not load, which is the failure this leg now actually catches. */
-    const juce::String thin = ui::typefaceDescriptionFor(ui::TypeWeight::thin);
+    /* The identity, not a report. Until this leg could only print what the host had resolved, because a
+       family-name request is a question the host answers — and off macOS it answered with nothing at all,
+       JUCE 9 substituting for no unmatched family (F-022). The two weights are embedded now, so there is no
+       question left to refuse.
+
+       The name it asserts is the PostScript name (nameID 6), read out of the bytes that ship, and not the
+       style string: four of this family's six weights report a weight-specific `nameID 1` and `nameID 2`
+       "Regular", so a `getStyle()` identity claim would be true of four different faces while drawing the
+       wrong one (F-030). The pointer is the stronger half of the same claim — the role drew the very face
+       object the ramp's weight resolved, not a face with the same name. */
+    const juce::String light = ui::typefaceDescriptionFor(ui::TypeWeight::light);
     const juce::String bold = ui::typefaceDescriptionFor(ui::TypeWeight::bold);
 
-    INFO("resolved faces — thin: " << thin.toRawUTF8() << ", bold: " << bold.toRawUTF8());
-    CHECK(thin == "Helvetica Neue / Thin");
-    CHECK(bold == "Helvetica Neue / Bold");
+    INFO("resolved faces — light: " << light.toRawUTF8() << ", bold: " << bold.toRawUTF8());
+    CHECK(light == "Clash Display / Light");
+    CHECK(bold == "Clash Display / Bold");
+
+    for (const ui::TypeWeight weight : ui::kAllWeights)
+    {
+        const harness::FontNames names
+            = harness::readFontNames(ui::embeddedFaceData(weight).data(), ui::embeddedFaceData(weight).size());
+        const char* const want = weight == ui::TypeWeight::bold ? "ClashDisplay-Bold" : "ClashDisplay-Light";
+
+        /* The two instruments disagree by design and both are printed: JUCE reports the typographic pair
+           (nameID 16/17 — "Clash Display" / "Light"), the bytes' legacy pair says "Clash Display Light" /
+           "Regular". Neither is the identity; nameID 6 is, and it is the only one distinct per face (F-030). */
+        INFO("weight " << (weight == ui::TypeWeight::bold ? "bold" : "light") << " carries nameID 6 "
+             << names.postScript << " and legacy 1/2 " << names.family << " / " << names.style);
+        CHECK(names.postScript == want);
+        CHECK(names.family != names.postScript);
+    }
 
     for (const ui::TypeRole role : ui::kAllRoles)
     {
@@ -472,12 +529,13 @@ TEST_CASE("ui: skin: the face drawn is the face the design names")
 
         REQUIRE(face != nullptr);
         INFO("role " << static_cast<int> (role) << " at " << ui::typeSpec(role).emPx << " em, weight "
-             << (weight == ui::TypeWeight::bold ? "bold" : "thin") << ", drawn face "
+             << (weight == ui::TypeWeight::bold ? "bold" : "light") << ", drawn face "
              << (drawn != nullptr ? (drawn->getName() + " / " + drawn->getStyle()).toRawUTF8() : "none"));
         CHECK(drawn != nullptr);
-        CHECK(drawn->getName() == "Helvetica Neue");
-        CHECK(drawn->getStyle() == (weight == ui::TypeWeight::bold ? "Bold" : "Thin"));
+        CHECK(drawn.get() == face.get());
     }
+
+    CHECK(ui::typefaceFor(ui::TypeWeight::light).get() != ui::typefaceFor(ui::TypeWeight::bold).get());
 }
 
 int main(int argc, char** argv)

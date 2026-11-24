@@ -4,6 +4,10 @@
 
 #include <juce_graphics/juce_graphics.h>
 
+#include <array>
+#include <cstddef>
+#include <span>
+
 namespace ui
 {
 /** The one place a font is chosen.
@@ -49,4 +53,37 @@ namespace ui
     own horizontal scale — so it cannot raise a 0.65 font to 0.7. What it does mean is recorded in
     F-022: text drawn through drawFittedText with a 0.65 face may be squeezed to 0.455. */
 [[nodiscard]] float squeezeFloor () noexcept;
+
+/** The bytes of one embedded face, for the leg that names and weighs what the binary carries: nothing else reads
+    them — `embeddedFace` builds the typeface from the same span — and the byte count is what c12 compares with
+    public/ClashDisplay_Complete/Fonts/OTF/. */
+[[nodiscard]] std::span<const std::byte> embeddedFaceData (TypeWeight weight) noexcept;
+
+/** The face's own figures, measured at a 1000 px em so every one of them is a per-em ratio.
+
+    `capPerEm` and `xPerEm` come from the glyph outlines; the digit advances from the same instrument font, whose
+    height *is* its em (see `figureFont` in the .cpp — `withHeight` sets the line box, which on the declared pair
+    is 0.898 em, and reading advances off a line-box-sized font over-states them by 11 %).
+
+    The two line-box pairs are fractions of the height the layout is given, not per em: `lineAscentFraction` and
+    `lineDescentFraction` are what the override produced, `faceAscentFraction` and `faceDescentFraction` what the
+    face would have produced alone. Their difference is the override doing its work (F-030), and neither is ever
+    `em − cap`. */
+struct FaceFigures
+{
+    float capPerEm{};
+    float xPerEm{};
+    float lineAscentFraction{};
+    float lineDescentFraction{};
+    float faceAscentFraction{};
+    float faceDescentFraction{};
+    std::array<float, 10> digitAdvancePerEm{};
+};
+
+[[nodiscard]] FaceFigures faceFiguresFor (TypeWeight weight);
+
+/** Whether the face carries a glyph for a codepoint — the coverage leg's primitive, and the reason it has
+    to exist: F-022's no-substitution rule means a missing codepoint draws nothing rather than a box, so a
+    blank is silent unless something asks the face. */
+[[nodiscard]] bool faceHasGlyph (TypeWeight weight, char32_t codepoint);
 }

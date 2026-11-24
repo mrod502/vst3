@@ -9,14 +9,14 @@
     12 to 16 for the level stage:
       1  the shell adds nothing       — render vs the same engine+scheduler chain built directly
       2  block-size invariance        — two block sequences summing to the same total
-      3  delta anchor                 — the wet window at n0+R+L, then silence; at the dial's centre
-                                        the law gives the dry path weight 0, so n0+R is silent too.
+      3  delta anchor                 — the wet window at n0+R+L, then silence; at q = 1 the law
+                                        gives the dry path weight 0, so n0+R is silent too.
                                         The physics run on the raw-wet variant; the shipped chain is
                                         held against itself and its reshaping reported (C3, A9, B6)
       4  declared latency             — R == hop for every pair the UI can express, and L moves it
                                         never
       5  dry path                     — no sidechain is A delayed by R, bit-exact; a connected but
-                                        silent bus is exact zeros; the render at the dial's centre is
+                                        silent bus is exact zeros; the render at q = 1 is
                                         the wet stream through the two safety stages, with the level
                                         stage parked at amount 0 so that by-hand copy is the model
       6  numeric hygiene              — no NaN or inf, silence in is silence out
@@ -39,7 +39,7 @@
       14 headroom with the stage on   — peak at amount 0 and 1 against the ceiling, including the
                                         shape whose wet path arrives 36 dB under target (C5)
       15 the dial travel, stage in    — nine positions: peak, click ratio against the parked render,
-                                        and the centre held to the target (C4)
+                                        and q = 1 held to the target (C4)
       16 automating the two controls  — amount and floor swept every callback, plus a stream parked
                                         on the floor: click metric and finiteness (C8)
       17 the fold's level consequence  — a consolidated stereo sidechain against the same material as
@@ -109,14 +109,18 @@
 #include <BarGeometry.hpp>
 #include <ChoiceBar.hpp>
 #include <EnvelopePanel.hpp>
+#include <FontFactory.hpp>
 #include <Grid.hpp>
 #include <Palette.hpp>
 #include <PanelGeometry.hpp>
 #include <PieDial.hpp>
 #include <ResponsePanel.hpp>
 #include <Text.hpp>
+#include <TextGeometry.hpp>
 #include <Theme.hpp>
+#include <TypeRamp.hpp>
 
+#include <FontNameTable.hpp>
 #include <HarnessShell.hpp>
 #include <HarnessStream.hpp>
 
@@ -133,6 +137,7 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -180,6 +185,7 @@ using harness::indexOfHop;
 using harness::indexOfLength;
 using harness::setChoice;
 using harness::setFloat;
+using harness::setBlendDial;
 using harness::setBool;
 using harness::parameterValue;
 using harness::applyLayout;
@@ -317,7 +323,7 @@ bool checkDeltaAnchor(const Shape &shape, const juce::File &outputDirectory, boo
         const auto &stream = raw[channel];
 
         /* (a) nothing at all before the wet window opens — including n0 + R, where this harness used
-           to find the dry spike. At the dial's centre the law gives the dry path weight exactly 0, so
+           to find the dry spike. At q = 1 the law gives the dry path weight exactly 0, so
            the spike is the thing M3 removes rather than the thing that proves the seam works; the dry
            path itself is proven bit-exact at the dial endpoints in §5.10. */
         for (int i = 0; i < n0 + latency + length; ++i)
@@ -684,11 +690,12 @@ bool checkDryPath(const Shape &shape, int total)
     auto processorWithB = makeProcessor();
     if (!configure(*processorWithB, kStereoWithB, shape))
         return false;
+    if (!setBlendDial(*processorWithB, 1.0f))
+        return false;
 
-    /* A bus that is connected but never fed is silence on B, and at the dial's centre the law is
-       pure convolution, so the render is exact zeros — not A. The pin of D-011 guards a *disabled*
-       bus, which is the case above; a connected bus means the host asked for the effect and gets the
-       effect of silence. This is also §2's "silence stays silence": no noise floor, exactly zero. */
+    /* A bus that is connected but never fed is silence on B, and at q = 1 the law is pure convolution, so the
+       render is exact zeros — not A. D-011's pin guards a *disabled* bus, which is the case above; a connected
+       bus means the host asked for the effect and gets the effect of silence — §2's "silence stays silence". */
     const auto silentBus = render(*processorWithB, a, nullptr, blocks);
     bool silentIsExactZero = true;
     for (const auto &channel : silentBus)
@@ -701,7 +708,7 @@ bool checkDryPath(const Shape &shape, int total)
     }
     else
     {
-        std::cout << "  ok   sidechain connected and silent at the dial's centre: exact zeros\n";
+        std::cout << "  ok   sidechain connected and silent with the dial at q = 1: exact zeros\n";
     }
 
     const int sideChannels = processorWithB->getChannelCountOfBus(true, 1);
@@ -731,12 +738,9 @@ bool checkDryPath(const Shape &shape, int total)
         std::cout << "  ok   sidechain content changes the render (the old T3 inverts, as it must)\n";
     }
 
-    /* Criterion 3, re-pointed by M3 item 2 criterion C3: at the dial's centre the shell's render is
-       the wet stream through the two safety stages and nothing else — no gain, no delay, no
-       contribution from the law's dry weights. The reference is the pure-wet engine (no law, no
-       stages) with the stages applied by hand in decision C's order, so the leg still pins the
-       engine's gain against something that contains no mix stage at all; the duplication is C3's and
-       §5.1 is what keeps the copy honest. The tolerance is item 6's, written down rather than assumed. */
+    /* Criterion 3, re-pointed by M3 item 2's C3: at q = 1 the shell's render is the wet stream through the two
+       safety stages and nothing else, so the reference is the pure-wet engine with those stages applied by hand
+       in decision C's order — a copy with no mix stage in it, which §5.1 keeps honest, at item 6's tolerance. */
     const auto wetOnly = renderPureWet(shape, a, b, channels, sideChannels, blocks);
     const auto centreWet = shapedBySafetyStages(wetOnly, 0.0f, true, true);
     double worst = 0.0;
@@ -751,13 +755,13 @@ bool checkDryPath(const Shape &shape, int total)
 
     if (worst > kWetRecoveryTolerance)
     {
-        std::cout << "  FAIL dial at centre is not the wet stream through the stages: worst "
+        std::cout << "  FAIL dial at q = 1 is not the wet stream through the stages: worst "
                   << worst << "\n";
         passed = false;
     }
     else
     {
-        std::cout << "  ok   dial at centre == raw wet + DC block + soft clip, worst " << worst
+        std::cout << "  ok   dial at q = 1 == raw wet + DC block + soft clip, worst " << worst
                   << (bitIdentical ? " (bit-identical)" : "") << " (tol "
                   << kWetRecoveryTolerance << ")\n";
     }
@@ -909,9 +913,9 @@ bool reportHeadroom(const Shape &shape, int total)
         {
             const Stream &side = correlatedPair ? correlated : independent;
             std::cout << "       " << amplitude << (correlatedPair ? " A == B:" : " independent:");
-            for (const float dial : {-1.0f, -0.75f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 0.75f, 1.0f})
+            for (const float dial : {0.0f, 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f, 1.0f})
             {
-                if (!setFloat(*processor, EntangleAudioProcessor::blendParameterId, dial))
+                if (!setBlendDial(*processor, dial))
                     return false;
                 const auto out = render(*processor, a, &side, blocks);
                 const double peak = peakOf(out);
@@ -935,7 +939,7 @@ bool reportHeadroom(const Shape &shape, int total)
         }
     }
 
-    if (!setFloat(*processor, EntangleAudioProcessor::blendParameterId, 0.0f))
+    if (!setBlendDial(*processor, 1.0f))
         return false;
     return passed;
 }
@@ -961,11 +965,11 @@ bool checkMixLaw()
               << shellOf(*processor).grainLengthSamples() << ", R=" << latency << "\n";
     bool passed = true;
 
-    /* Criteria 1 and 2, at the D-009 levels rather than a quiet test signal. The correlated pair is
-       the one that matters: with A == B the wet stream is at its loudest relative to the dry, so any
-       residue the weights left behind (INDEX §8.4 measures cosf(pi/2f) at -4.37e-08) shows up here as
-       a difference from A instead of hiding under a rounding. The independent pair is what proves the
-       dial picks B at +1 rather than whatever A happens to be. */
+    /* Criteria 1 and 2 (D-038), at the D-009 levels rather than a quiet test signal. The correlated pair is
+       the one that matters: with A == B the wet stream is at its loudest relative to the dry, so any residue
+       the weights left behind (INDEX §8.4 measures cosf(pi/2f) at -4.37e-08) shows up here as a difference
+       from A instead of hiding under a rounding. The independent pair is what proves the dry term at q = 0 is
+       A itself and not whatever the convolution happens to be. */
     for (const float amplitude : {0.4f, 1.0f})
     {
         const auto a = noiseStream(channels, total, 555U, amplitude);
@@ -978,14 +982,42 @@ bool checkMixLaw()
             const char *pairing = correlatedPair ? "A == B" : "independent";
             const juce::String at = "amplitude " + juce::String(amplitude) + ", " + pairing;
 
-            const auto minusOne = renderAt(*processor, a, &side, -1.0f, 0.0f, false, blocks);
-            passed = expectDelayedBitExact(minusOne, a, latency,
-                                    ("dial -1, " + at + ": A by R, bit-exact").toRawUTF8())
+            const auto dryEnd = renderAt(*processor, a, &side, 0.0f, 0.0f, false, blocks);
+            passed = expectDelayedBitExact(dryEnd, a, latency,
+                                    ("dial q = 0, " + at + ": A by R, bit-exact").toRawUTF8())
                      && passed;
-            const auto plusOne = renderAt(*processor, a, &side, 1.0f, 0.0f, false, blocks);
-            passed = expectDelayedBitExact(plusOne, side, latency,
-                                    ("dial +1, " + at + ": B by R, bit-exact").toRawUTF8())
-                     && passed;
+        }
+    }
+
+    /* The other endpoint, decided the only way the shell can decide that a coefficient is exactly zero: with
+       a live A and a silent B the convolution is silence, so whatever reaches the output is coefA * A, and at
+       q = 1 that has to be exactly zero rather than small. The two positions below it are the control — a
+       dial that had stopped moving would print zeros at all three and prove nothing. */
+    {
+        const auto liveA = noiseStream(channels, total, 557U, 1.0f);
+        const Stream silentB = constantStream(sideChannels, total, 0.0f);
+        bool wetEndClean = true;
+        std::cout << "       endpoint table, live A and silent B (coefA must reach exactly 0 at q = 1):";
+        for (const float q : {0.0f, 0.5f, 1.0f})
+        {
+            const auto out = renderAt(*processor, liveA, &silentB, q, 0.0f, false, blocks);
+            const double peak = peakOf(out);
+            if (q == 1.0f)
+                wetEndClean = wetEndClean && peak == 0.0;
+            if (q == 0.0f)
+                wetEndClean = wetEndClean && peak > 0.0;
+            std::cout << " q=" << q << " peak " << peak;
+        }
+        std::cout << "\n";
+        if (!wetEndClean)
+        {
+            std::cout << "  FAIL the endpoint table: q = 1 is not exact zeros, or q = 0 has nothing of A in it\n";
+            passed = false;
+        }
+        else
+        {
+            std::cout << "  ok   q = 1 leaves nothing of the dry bus (coefA exactly 0) with q = 0 and 0.5 "
+                         "carrying it\n";
         }
     }
 
@@ -1001,11 +1033,11 @@ bool checkMixLaw()
     /* Every position the dial can hold, on the parameter's own quantum rather than a decimal list
        that would snap onto it anyway. */
     constexpr int kDialPositions =
-        static_cast<int>(2.0f / EntangleAudioProcessor::blendStep) + 1;
+        static_cast<int>(1.0f / EntangleAudioProcessor::blendStep) + 1;
     for (int step = 0; step < kDialPositions; ++step)
     {
-        const float dial = -1.0f + EntangleAudioProcessor::blendStep * static_cast<float>(step);
-        if (!setFloat(*pinned, EntangleAudioProcessor::blendParameterId, dial))
+        const float dial = EntangleAudioProcessor::blendStep * static_cast<float>(step);
+        if (!setBlendDial(*pinned, dial))
             return false;
         if (shellOf(*pinned).effectiveBlendPosition() != -1.0f)
         {
@@ -1043,21 +1075,21 @@ bool checkMixLaw()
         return false;
     pinned->setRateAndBufferSizeDetails(kSampleRate, kMaxBlock);
     pinned->prepareToPlay(kSampleRate, kMaxBlock);
-    if (!setFloat(*pinned, EntangleAudioProcessor::blendParameterId, 0.25f))
+    if (!setBlendDial(*pinned, 0.25f))
         return false;
     /* Compared against the value the parameter holds rather than the literal written into it: the
        claim is that the dial's own position runs again, not that a decimal survives the round trip
-       through JUCE's normalised domain. */
+       through JUCE's normalised domain. The shift is the one `effectiveBlend` applies. */
     const float pokedDial = parameterValue(*pinned, EntangleAudioProcessor::blendParameterId);
-    const bool restored = shellOf(*pinned).effectiveBlendPosition() == pokedDial;
+    const bool restored = shellOf(*pinned).effectiveBlendPosition() == pokedDial - 1.0f;
     if (!restored)
         std::cout << "  FAIL the dial did not come back after the bus appeared: "
-                  << shellOf(*pinned).effectiveBlendPosition() << " != " << pokedDial << "\n";
+                  << shellOf(*pinned).effectiveBlendPosition() << " != " << pokedDial - 1.0f << "\n";
     else
     {
-        /* A real B on the bus that just appeared: at a positive dial the dry bus is B, so rendering
-           this with silence on the sidechain would prove nothing about the dial and would report
-           silence for the honest reason. */
+        /* A real B on the bus that just appeared: at q = 0.25 the output carries dry A and the
+           convolution, so a silent sidechain would leave the leg measuring the dry term alone and
+           reporting silence for the honest reason. */
         const auto pinSide = noiseStream(pinnedChannels, total, 4712U, 0.4f);
         const auto live = render(*pinned, pinInput, &pinSide, blocks);
         bool audible = false;
@@ -1071,16 +1103,108 @@ bool checkMixLaw()
         passed = audible && passed;
     }
 
+    /* What a saved position means after the re-range, in the only currency a preset or an automation lane
+       carries: the normalised value, which D-038 leaves untouched while the law position it denotes moves to
+       q - 1. Three points because the claim is the shape of that line; the control is that they are distinct. */
+    {
+        auto *blend = dynamic_cast<juce::RangedAudioParameter *>(
+            shellOf(*pinned).apvts.getParameter(EntangleAudioProcessor::blendParameterId));
+        if (blend == nullptr)
+            return false;
+        std::cout << "       stored position -> law position (D-038):";
+        bool remapExact = true;
+        for (const float n : {0.0f, 0.5f, 1.0f})
+        {
+            blend->setValueNotifyingHost(n);
+            const float law = shellOf(*pinned).effectiveBlendPosition();
+            const float q = parameterValue(*pinned, EntangleAudioProcessor::blendParameterId);
+            std::cout << " n=" << n << " q=" << q << " p=" << law;
+            remapExact = remapExact && q == n && law == n - 1.0f;
+        }
+        std::cout << "\n";
+        if (!remapExact)
+        {
+            std::cout << "  FAIL the stored position does not map n -> p = n - 1 (D-038)\n";
+            passed = false;
+        }
+        else
+        {
+            std::cout << "  ok   a stored normalised value keeps its q and now denotes p = q - 1, at all "
+                         "three points\n";
+        }
+    }
+
+    /* F-010 re-asked on the new domain: a decimal quantum is inert on [0, 1] and a non-tiling one is not, so
+       the grid must tile the range, every position must round-trip, and full wet must be reachable by literal
+       from the bottom. Why 0.01 hides all three, and the tautology this leg's first draft was: F-032. */
+    {
+        const float gridTop = EntangleAudioProcessor::blendStep * static_cast<float>(kDialPositions - 1);
+        if (gridTop != 1.0f)
+        {
+            std::cout << "  FAIL the dial's quantum does not tile [0, 1]: " << kDialPositions
+                      << " positions of " << EntangleAudioProcessor::blendStep << " stop at " << gridTop
+                      << ", so full wet is not a dial position (F-010)\n";
+            passed = false;
+        }
+        else
+        {
+            int firstBad = -1;
+            float asked = 0.0f, held = 0.0f, law = 0.0f;
+            bool gridExact = true;
+            for (int step = 0; step < kDialPositions && gridExact; ++step)
+            {
+                const float q = EntangleAudioProcessor::blendStep * static_cast<float>(step);
+                if (!setBlendDial(*pinned, q))
+                    return false;
+                held = parameterValue(*pinned, EntangleAudioProcessor::blendParameterId);
+                law = shellOf(*pinned).effectiveBlendPosition();
+                gridExact = held == q && law == q - 1.0f;
+                if (!gridExact)
+                {
+                    firstBad = step;
+                    asked = q;
+                }
+            }
+            if (gridExact)
+            {
+                if (!setBlendDial(*pinned, 0.0f) || !setBlendDial(*pinned, 1.0f))
+                    return false;
+                held = parameterValue(*pinned, EntangleAudioProcessor::blendParameterId);
+                law = shellOf(*pinned).effectiveBlendPosition();
+                gridExact = held == 1.0f && law == 0.0f;
+                if (!gridExact)
+                {
+                    firstBad = kDialPositions - 1;
+                    asked = 1.0f;
+                }
+            }
+            if (!gridExact)
+            {
+                std::cout << "  FAIL dial position " << firstBad << " asked " << asked
+                          << ", the parameter holds " << held << " and the law reads " << law
+                          << " (F-010: asked q, got neither q nor p = q - 1)\n";
+                passed = false;
+            }
+            else
+            {
+                std::cout << "  ok   " << kDialPositions
+                          << " dial positions tile [0, 1] and round-trip exactly through the "
+                             "parameter's snap, full wet reachable from the bottom, each denoting"
+                             " p = q - 1 (F-010)\n";
+            }
+        }
+    }
+
     // Criterion 10: bypass, on a dial position where the effect is audible.
     const auto a = noiseStream(channels, total, 8181U, 0.4f);
     const auto b = noiseStream(sideChannels, total, 8182U, 0.4f);
-    const auto inEffect = renderAt(*processor, a, &b, -0.4f, 0.0f, false, blocks);
+    const auto inEffect = renderAt(*processor, a, &b, 0.6f, 0.0f, false, blocks);
     const int latencyBeforeBypass = processor->getLatencySamples();
-    const auto bypassed = renderAt(*processor, a, &b, -0.4f, 0.0f, true, blocks);
+    const auto bypassed = renderAt(*processor, a, &b, 0.6f, 0.0f, true, blocks);
     const int latencyAfterBypass = processor->getLatencySamples();
 
     passed = expectDelayedBitExact(bypassed, a, latency,
-                            "bypassed: A by R, wet and dry-B contributions exactly zero")
+                            "bypassed: A by R, wet contribution exactly zero")
              && passed;
     if (latencyBeforeBypass != latencyAfterBypass)
     {
@@ -1095,15 +1219,15 @@ bool checkMixLaw()
 
     /* The dial survives the cycle: unbypass and re-render, and the settled numbers are the ones from
         before it — bit for bit, because nothing in a bypass touches the blend target. */
-    const auto afterCycle = renderAt(*processor, a, &b, -0.4f, 0.0f, false, blocks);
+    const auto afterCycle = renderAt(*processor, a, &b, 0.6f, 0.0f, false, blocks);
     passed = expectIdentical(inEffect, afterCycle, "the dial survives a bypass cycle") && passed;
 
     /*  Criterion 11, re-pointed at the shipped chain: the output gain, against the same wet stream
-        DC-blocked, scaled by the parameter's own figure and clipped last. That is what the law
-        produces at the dial's centre, where the dry weights are exactly 0 and the coefficient
-        arithmetic has nothing left to round — and the order is the point: the clip bounds the *gained*
-        sum, so 6 dB and 12 dB are expected to sit on the ceiling rather than 6 and 12 dB above a
-        clipped signal. A reference scaled after the clip would pass the bound and miss the order. */
+        DC-blocked, scaled by the parameter's own figure and clipped last. That is what the law produces at
+        q = 1, where the dry weight is exactly 0 and the coefficient arithmetic has nothing left to round —
+        and the order is the point: the clip bounds the *gained* sum, so 6 dB and 12 dB are expected to sit
+        on the ceiling rather than 6 and 12 dB above a clipped signal. A reference scaled after the clip
+        would pass the bound and miss the order. */
     const auto wet = renderPureWet(kDefault, a, b, channels, sideChannels, blocks);
     /* Parked at amount 0 for the same reason §5.5 parks it: the reference is the wet stream through
        the two stages by hand, and a third stage that is doing something would move every rung of the
@@ -1113,7 +1237,7 @@ bool checkMixLaw()
         return false;
     for (const float gainDb : {-60.0f, -12.0f, 0.0f, 6.0f, 12.0f})
     {
-        const auto gained = renderAt(*processor, a, &b, 0.0f, gainDb, false, blocks);
+        const auto gained = renderAt(*processor, a, &b, 1.0f, gainDb, false, blocks);
         const auto want = shapedBySafetyStages(wet, gainDb, true, true);
         double worst = 0.0;
         bool bitIdentical = true;
@@ -1158,7 +1282,7 @@ bool checkMixLaw()
         bool finite = true;
         for (int decibels = -60; decibels <= 12 && monotone; ++decibels)
         {
-            const auto out = renderAt(*sweeper, sweepA, &sweepB, 0.0f,
+            const auto out = renderAt(*sweeper, sweepA, &sweepB, 1.0f,
                                       static_cast<float>(decibels), false, sweepBlocks);
             const double peak = peakOf(out);
             finite = finite && std::isfinite(peak);
@@ -1177,7 +1301,7 @@ bool checkMixLaw()
 
     if (!setFloat(*processor, EntangleAudioProcessor::outputGainParameterId, 0.0f)
         || !setBool(*processor, EntangleAudioProcessor::bypassParameterId, false)
-        || !setFloat(*processor, EntangleAudioProcessor::blendParameterId, 0.0f))
+        || !setBlendDial(*processor, 1.0f))
         return false;
     return passed;
 }
@@ -1196,12 +1320,11 @@ bool checkParameterStateCompatibility()
     auto writer = makeProcessor();
     if (!configure(*writer, kStereoWithB, Shape{128, 4096}))
         return false;
-    if (!setFloat(*writer, EntangleAudioProcessor::blendParameterId, 0.37f))
+    if (!setBlendDial(*writer, 0.37f))
         return false;
-    /* The writer's own held value, not the 0.37 that was asked for: the blend's 0.01 quantum is not
-       dyadic, so 0.37 comes back a few ULP off its decimal. The claim under test is that the number
-       in the file is the number that runs after the load, which is a statement about the round trip,
-       not about decimal literals surviving it. */
+    /* The writer's own held value, not the 0.37 asked for: the dial's 1/128 quantum is coarser than the
+       decimal, so 0.37 lands on 47/128. The claim under test is that the number in the file is the number
+       that runs after the load — a statement about the round trip, not about decimal literals surviving it. */
     const float writtenBlend = parameterValue(*writer, EntangleAudioProcessor::blendParameterId);
 
     /* The state this build writes, minus the two parameters that did not exist before this item —
@@ -1277,11 +1400,11 @@ bool checkParameterStateCompatibility()
     }
 
     /* And the file's own blend still runs after the load: the pin is not involved on a bus that is
-       present, so the effective position is the loaded one. */
-    if (shellOf(*reader).effectiveBlendPosition() != writtenBlend)
+       present, so the effective position is the loaded q shifted by the one shift `effectiveBlend` owns. */
+    if (shellOf(*reader).effectiveBlendPosition() != writtenBlend - 1.0f)
     {
         std::cout << "  FAIL the loaded dial does not run: "
-                  << shellOf(*reader).effectiveBlendPosition() << " != " << writtenBlend << "\n";
+                  << shellOf(*reader).effectiveBlendPosition() << " != " << writtenBlend - 1.0f << "\n";
         passed = false;
     }
     else
@@ -1564,7 +1687,7 @@ bool checkLevelAnchoring()
     const float amplitude = 0.1f;
 
     std::cout << "[5.13] the L-spread anchored to the target (C3). Independent A and B at amplitude "
-              << amplitude << ",\n       dial at the centre, RMS over the last second; target ="
+              << amplitude << ",\n       dial at q = 1, RMS over the last second; target ="
                  " sqrt(rmsA . rmsB) over the same window\n";
     bool passed = true;
     double worstAnchored = 0.0;
@@ -1744,7 +1867,7 @@ bool checkLevelAcrossTravel()
     const auto blocks = blocksSummingTo(total, 0);
 
     std::cout << "[5.15] the dial travel with the stage in (C4): peak / click ratio against the same\n"
-                 "       render parked at amount 0 / centre RMS against the target; the level curve\n"
+                 "       render parked at amount 0 / q = 1 RMS against the target; the level curve\n"
                  "       itself is D-010's and is reported, not gated.\n";
     bool passed = true;
 
@@ -1761,14 +1884,14 @@ bool checkLevelAcrossTravel()
                 return false;
 
             std::cout << "       " << amplitude << (correlatedPair ? " A == B:" : " independent:");
-            for (const float dial : {-1.0f, -0.75f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 0.75f, 1.0f})
+            for (const float dial : {0.0f, 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f, 1.0f})
             {
                 double peak[2] = {0.0, 0.0};
                 double click[2] = {0.0, 0.0};
                 int index = 0;
                 for (const float amount : {0.0f, 1.0f})
                 {
-                    if (!setFloat(*processor, EntangleAudioProcessor::blendParameterId, dial)
+                    if (!setBlendDial(*processor, dial)
                         || !setFloat(*processor,
                                      EntangleAudioProcessor::normalisationAmountParameterId, amount))
                         return false;
@@ -1794,9 +1917,9 @@ bool checkLevelAcrossTravel()
             }
             std::cout << "\n";
 
-            /* The centre is the one position where the output *is* the corrected wet path, so it is
-               the position that can be held against the target rather than against another render. */
-            if (!setFloat(*processor, EntangleAudioProcessor::blendParameterId, 0.0f)
+            /* q = 1 is the one position where the output *is* the corrected wet path, so it is the position
+               that can be held against the target rather than against another render. */
+            if (!setBlendDial(*processor, 1.0f)
                 || !setFloat(*processor, EntangleAudioProcessor::normalisationAmountParameterId, 1.0f))
                 return false;
             const auto centre = render(*processor, a, &side, blocks);
@@ -1807,12 +1930,12 @@ bool checkLevelAcrossTravel()
             {
                 const double target = std::sqrt(aRms[channel] * bRms[channel]);
                 const double deviation = decibels(centreRms[channel]) - decibels(target);
-                std::cout << "       ch" << channel << " at the centre: " << decibels(centreRms[channel])
+                std::cout << "       ch" << channel << " at q = 1: " << decibels(centreRms[channel])
                           << " dBFS against the target " << decibels(target) << " = " << deviation
                           << " dB\n";
                 if (std::abs(deviation) > kCentreToleranceDb)
                 {
-                    std::cout << "  FAIL C4: the centre is " << deviation
+                    std::cout << "  FAIL C4: q = 1 is " << deviation
                               << " dB from the target, over the " << kCentreToleranceDb << " dB gate\n";
                     passed = false;
                 }
@@ -1907,7 +2030,8 @@ bool checkLevelZipper()
         return false;
     const auto parked = render(*processor, parkedA, &parkedB, blocks);
     const auto uncorrected = renderReference(kDefault, parkedA, parkedB, 2, 2, blocks,
-                                             MixSetting{0.0f, 0.0f, false, 0.0f, floorDb},
+                                             MixSetting{.dial = 1.0f, .normalisationAmount = 0.0f,
+                                                        .floorDb = floorDb},
                                              entangle::ChainVariant::Shipped);
     if (!expectFinite(parked, "a stream parked on the floor"))
         passed = false;
@@ -1929,14 +2053,14 @@ bool checkLevelZipper()
 /* D-018 records the fold's level consequence as arithmetic — "a −3 dB fold drops envB, so the level
    stage's target moves −3 dB at amount = 1" — and INDEX §7 says no figure exists for it. This is the
    figure, measured through the shared builder rather than derived: one mono main, a consolidated stereo
-   sidechain against the same material arriving as a mono sidechain, dial at the centre so the wet path
+   sidechain against the same material arriving as a mono sidechain, dial at q = 1 so the wet path
    carries the render, and both against the stage parked at amount 0 so the correction is separable from
    the fold. Reported, not tuned; whether any of it is audible is M9 row 2's (item 02 criterion 9). */
 bool checkConsolidatedSidechainLevel()
 {
     std::cout << "[5.17] the fold's level consequence (M4 item 02). Mono main, decorrelated stereo\n"
-                 "       sidechain against channel 0 of that pair as a mono sidechain; dial at the\n"
-                 "       centre, RMS over the last second of a three-second render.\n";
+                 "       sidechain against channel 0 of that pair as a mono sidechain; dial at q = 1,\n"
+                 "       RMS over the last second of a three-second render.\n";
 
     const Shape shape = kTightest;
     const int total = 3 * static_cast<int>(kSampleRate);
@@ -1949,7 +2073,7 @@ bool checkConsolidatedSidechainLevel()
     const Stream narrow{wide[0]};
 
     const MixSetting corrected{};
-    const MixSetting parked{0.0f, 0.0f, false, 0.0f, dsp::LevelNormalizer::defaultFloorDb};
+    const MixSetting parked{.dial = 1.0f, .normalisationAmount = 0.0f};
 
     const auto foldOn = renderReference(shape, a, wide, 1, 2, blocks, corrected);
     const auto foldOff = renderReference(shape, a, wide, 1, 2, blocks, parked);
@@ -2705,7 +2829,7 @@ bool checkConsolidatedLayoutFromTheHost()
     The comparisons are bit-exact on purpose. A skipped re-prepare leaves the transport exactly where it was; a
     re-prepare that should have been skipped clears the rings, re-applies the latency pre-fill and drops the
     tail, which moves the dry stream by R samples. Both are visible to `!=` long before the wet path arrives, so
-    the re-prepare legs run the blend dial off centre (dry live) and render short. */
+    the re-prepare legs run the blend dial below the top (q = 0.5, so dry A is live) and render short. */
 bool checkReprepareFloorAndLatency()
 {
     std::cout << "[5.19] allocation policy and the conditional re-prepare (M4 item 04). The floor of D-022 A\n"
@@ -2936,7 +3060,7 @@ bool checkReprepareFloorAndLatency()
             auto fresh = makeProcessor();
             if (!configure(*fresh, *case3.to, shape))
                 return false;
-            if (!setFloat(*fresh, EntangleAudioProcessor::blendParameterId, 0.5f))
+            if (!setBlendDial(*fresh, 0.5f))
                 return false;
             const auto expected = renderSwept(*fresh, a, &wide, blocks, [](int) {}, false);
 
@@ -2955,7 +3079,7 @@ bool checkReprepareFloorAndLatency()
             auto warm = makeProcessor();
             if (!configure(*warm, *case3.from, shape))
                 return false;
-            if (!setFloat(*warm, EntangleAudioProcessor::blendParameterId, 0.5f))
+            if (!setBlendDial(*warm, 0.5f))
                 return false;
             bool applied = true;
             std::size_t fired = 0;
@@ -3010,7 +3134,7 @@ bool checkReprepareFloorAndLatency()
 
             auto released = makeProcessor();
             if (!configure(*released, kStereoWithB, shape)
-                || !setFloat(*released, EntangleAudioProcessor::blendParameterId, 0.5f))
+                || !setBlendDial(*released, 0.5f))
                 return false;
             std::size_t fired = 0;
             const auto gesture = [&](int)
@@ -3062,13 +3186,13 @@ bool checkReprepareFloorAndLatency()
 
         auto control = makeProcessor();
         if (!configure(*control, kStereoWithB, shape)
-            || !setFloat(*control, EntangleAudioProcessor::blendParameterId, 0.5f))
+            || !setBlendDial(*control, 0.5f))
             return false;
         const auto uninterrupted = renderSwept(*control, a, &b, blocks, [](int) {}, false);
 
         auto poked = makeProcessor();
         if (!configure(*poked, kStereoWithB, shape)
-            || !setFloat(*poked, EntangleAudioProcessor::blendParameterId, 0.5f))
+            || !setBlendDial(*poked, 0.5f))
             return false;
         std::size_t fired = 0;
         const auto gesture = [&](int) {
@@ -3119,13 +3243,13 @@ bool checkReprepareFloorAndLatency()
 
             auto control = makeProcessor();
             if (!configure(*control, kStereoWithB, shape)
-                || !setFloat(*control, EntangleAudioProcessor::blendParameterId, 0.5f))
+                || !setBlendDial(*control, 0.5f))
                 return false;
             const auto uninterrupted = renderSwept(*control, a, &b, blocks, [](int) {}, false);
 
             auto moved = makeProcessor();
             if (!configure(*moved, kStereoWithB, shape)
-                || !setFloat(*moved, EntangleAudioProcessor::blendParameterId, 0.5f))
+                || !setBlendDial(*moved, 0.5f))
                 return false;
             std::size_t fired = 0;
             const auto gesture = [&](int) {
@@ -3242,7 +3366,7 @@ bool checkReprepareFloorAndLatency()
 
         auto processor = makeProcessor();
         if (!configure(*processor, kStereoWithB, shape)
-            || !setFloat(*processor, EntangleAudioProcessor::blendParameterId, 0.5f))
+            || !setBlendDial(*processor, 0.5f))
             return false;
         const auto before = renderSwept(*processor, a, &b, blocks, [](int) {});
 
@@ -3458,7 +3582,8 @@ const std::array<BlockPlan, 3> kBlockPlans{{
 }};
 
 /** Everything a per-cell leg needs: the shell prepared at the cell's layout and shape with the stage parked
-    and the dial at the centre, the block list, and the broadband material. */
+    and the dial at its default q = 1 — the same position `kMatrixMix` parks the reference renders at — the
+    block list, and the broadband material. */
 struct MatrixRig
 {
     MatrixReport &report;
@@ -4465,7 +4590,7 @@ bool refusalMovesNothing(MatrixReport &report)
 
         auto processor = makeProcessor();
         if (!configure(*processor, kStereoWithB, shape)
-            || !setFloat(*processor, EntangleAudioProcessor::blendParameterId, 0.5f))
+            || !setBlendDial(*processor, 0.5f))
             return false;
         const auto before = render(*processor, a, &b, blocks);
 
@@ -4633,11 +4758,12 @@ bool checkLayoutReport(ReportLogFilter &filter)
    C3  no sidechain says so three ways — the widgets inert with no tint left anywhere in their bodies, the words
        `no sidechain`, the pin clause in `blendReadout` — with the same rects painted live beside them, and no
        colour on the sheet that the five tokens cannot make. The pixels no *pair* of tokens can make are counted
-       and located, and they are the dial's own, where the datum is filled over the wedge over the face.
+       and located, and since D-038 they are all on the live dial, where the wedge's antialiased edge crosses
+       the face over the sheet — none of them on the inert one.
    C4  the clamp: the reachable bound's verbatim clause, the spec's own example showing it cannot clamp, and
        all 28 (hop, L) pairs showing which ways the running length can leave the dial.
-   C5  the pin at a dial position the law overrides, and the wedge on the other side of the datum for the
-       same dial with a sidechain connected.
+   C5  the pin at a dial position the law overrides, and the wedge's sweep growing with q over a proportional
+       face — zero at q = 0, no `ink` inside the disc anywhere (D-038 took the datum mark out of the product).
    C6  `setStateInformation` with the editor alive — the direction a hand-written link forgets, and the victim
        `03` §5 arms 1 and 9 predict.
    C7  nothing lies about being live: boxes 3, 5, 6's third row and the two spans hold no child and no pixel
@@ -4795,27 +4921,10 @@ juce::Rectangle<int> boundsOfNotExactly(const juce::Image &image, juce::Rectangl
     return found;
 }
 
-/** The mean x of every `token` pixel in `area` — the instrument for "which side of the datum did the wedge
-    grow to", which is the half of criterion 5 that a count of `fill` pixels cannot answer. */
-int meanXOfToken(const juce::Image &image, juce::Rectangle<int> area, std::uint32_t token)
-{
-    long long sum = 0;
-    int count = 0;
-    area = area.getIntersection({0, 0, image.getWidth(), image.getHeight()});
-
-    for (int y = area.getY(); y < area.getBottom(); ++y)
-        for (int x = area.getX(); x < area.getRight(); ++x)
-            if (argbAt(image, x, y) == token)
-            {
-                sum += x;
-                ++count;
-            }
-    return count == 0 ? -1 : static_cast<int>(sum / count);
-}
-
 /** The fourth test for a colour the two-token rule refuses: is it still a combination of the five? A flat sheet
-    composites palette over palette, so a pixel where three of the skin's own fills overlap — the dial's ink
-    datum over its wedge over its face — leaves a colour no *pair* can make and every *three* can. Solved as
+    composites palette over palette, so a pixel where three of the skin's own fills overlap — the dial's wedge
+    edge over its face over the sheet, since D-038 took the datum out — leaves a colour no *pair* can make and
+    every *three* can. Solved as
     `c = w·(ground, fill, track, trace) + (1 − Σw)·ink` over the four triples of pastels: `ink` is the origin, so
     a point is in the hull when some triple reaches it with non-negative weights summing to at most one. The two
     tolerances are the rasteriser's own rounding and the fact that an 8-bit pixel is rarely exactly on a plane. */
@@ -5012,17 +5121,37 @@ bool shellGeometryFollowsTheGrid(MatrixReport &report)
     ui::Theme probe;
     probe.setScale(grid.k());
     const float rampScale = ui::Theme::fontScaleFor(grid.k());
-    const auto capOf = [&](ui::TypeRole role)
-    { return static_cast<int>(std::lround(probe.capHeightOf(role, rampScale))); };
 
     const int body = ui::BarGeometry::bodyHeightAt(grid.k());
-    const int labelColumn = ui::BarGeometry::labelColumnAt(grid.k());
+    const int dialColumn = ui::BarGeometry::labelColumnAt(grid.k());
     const int pitch = (grid.cellPx().h - body) / 2;
-    const int wordmarkCap = capOf(ui::TypeRole::wordmark);
-    const int captionCap = capOf(ui::TypeRole::caption);
-    const double microEm = probe.fontFor(ui::TypeRole::micro, rampScale).getHeight();
-    const int rotatedCap = capOf(ui::TypeRole::rotatedCaption);
     const int rotatedInset = ui::rotatedCaptionInsetAt(grid.k());
+    const double microEm = probe.fontFor(ui::TypeRole::micro, rampScale).getHeight();
+
+    /* The shell places from a measured pass, so this leg measures the same way: a band is the cap and descent of
+       the words the role draws, a column is its widest word plus the 1 px a value needs to clear it, and the
+       millimetre figures floor both. The words are written here, so a rename reddens this leg too (C9). */
+    const int cellW = grid.cellPx().w;
+    const int rotatedExtent = grid.cellPx().h - 2 * rotatedInset;
+    const auto band = [&](const char *words, ui::TypeRole role, int room)
+    { return ui::reserveFor(probe.measureRun(words, role, rampScale, room).extent); };
+    const auto advance = [&](const char *words, ui::TypeRole role)
+    { return probe.measureText(words, role, rampScale).extent.advancePx; };
+
+    const int wordmarkBand = band("Entangle", ui::TypeRole::wordmark, cellW);
+    const int captionBand = std::max(band("Level Ctrl", ui::TypeRole::caption, cellW),
+                                     band("Window Size", ui::TypeRole::caption, cellW));
+    const int rotatedBand = std::max({band("EQ", ui::TypeRole::rotatedCaption, rotatedExtent),
+                                      band("Vibes", ui::TypeRole::rotatedCaption, rotatedExtent),
+                                      band("Waveform", ui::TypeRole::rotatedCaption, rotatedExtent)});
+    const int labelColumn = ui::labelColumnFor(std::max({advance("Out", ui::TypeRole::barLabel),
+                                                         advance("Amt", ui::TypeRole::barLabel),
+                                                         advance("Flr", ui::TypeRole::barLabel),
+                                                         advance("Adj", ui::TypeRole::barLabel)}),
+                                               grid.k());
+    const int choiceColumn = ui::labelColumnFor(std::max(advance("Grain", ui::TypeRole::micro),
+                                                         advance("Hop", ui::TypeRole::micro)),
+                                                grid.k());
 
     const ui::Rect box1 = grid.box(1);
     const ui::Rect box2 = grid.box(2);
@@ -5048,16 +5177,27 @@ bool shellGeometryFollowsTheGrid(MatrixReport &report)
                                         rectText(rectOf(grid.box(12))).toRawUTF8(),
                                         rectText(rectOf(grid.span(2, 1, 2))).toRawUTF8(), grid.marginPx()));
 
-    const int dialSide = std::min(box4.w - labelColumn, box4.h);
-    const int headingTop = box2.bottom() - captionCap;
-    /* The stack's arithmetic, taken off the `micro` em in multiples and rounded once per edge, the shell's way:
-       six ems of reserve for the four readouts' 1:1:2:2 lines, measured up from the heading's top edge. Stepping
-       each line off the last one's rounded bottom instead multiplies the em's half-pixel six times, and this is
-       the one place on the sheet where that would show up as a resize that does not scale as one. */
+    const int dialSide = std::min(box4.w - dialColumn, box4.h);
+    const int headingTop = box2.bottom() - captionBand;
+    /* The stack's edges come off the `micro` em in multiples, rounded once per edge — the shell's rule. Stepping
+       each line off the last one's rounded bottom multiplies the em's half-pixel by every line it passes through,
+       which is what a sheet that stops scaling as one looks like. */
     const auto ems = [microEm](int count)
     { return static_cast<int>(std::lround(static_cast<double>(count) * microEm)); };
-    const int stack = ems(6);
-    const int stackTop = headingTop - stack;
+    const auto stackLines = [&](const char *name, int minimum)
+    {
+        auto *readout = dynamic_cast<ui::Text *>(childNamed(*rig.editor, name));
+        if (readout == nullptr)
+            return minimum;
+        return std::max(minimum, probe.measureRun(readout->getText(), ui::TypeRole::micro, rampScale, box2.w)
+                                     .lineCount);
+    };
+
+    const int statusRows = stackLines("statusLine", 1);
+    const int layoutRows = stackLines("layoutReadout", 1);
+    const int grainRows = stackLines("grainReadout", 2);
+    const int blendRows = stackLines("blendReadout", 2);
+    const int stackTop = headingTop - ems(statusRows + layoutRows + grainRows + blendRows);
 
     struct Expectation
     {
@@ -5067,39 +5207,43 @@ bool shellGeometryFollowsTheGrid(MatrixReport &report)
         juce::Rectangle<int> want;
     };
 
-    const std::array<Expectation, 16> expectations{{
+    const std::array<Expectation, 18> expectations{{
         {"wordmark", "box 1", "C1 wordmark cap top on the sheet's top margin line",
-         {box1.x, box1.y, box1.w, wordmarkCap}},
+         {box1.x, box1.y, box1.w, wordmarkBand}},
         {"outputGain", "box 1", "C1 Out bar below the wordmark band",
-         {box1.x, box1.y + wordmarkCap, box1.w, body}},
+         {box1.x, box1.y + wordmarkBand, box1.w, body}},
         {"bypass", "box 1", "C1 bypass at the group pitch below Out",
-         {box1.x, box1.y + wordmarkCap + pitch, box1.w, body}},
+         {box1.x, box1.y + wordmarkBand + pitch, box1.w, body}},
         {"statusLine", "box 2", "C1 status line at the top of the stack",
-         {box2.x, stackTop, box2.w, ems(1)}},
+         {box2.x, stackTop, box2.w, ems(statusRows)}},
         {"layoutReadout", "box 2", "C1 summary line above the two readouts",
-         {box2.x, stackTop + ems(1), box2.w, ems(1)}},
+         {box2.x, stackTop + ems(statusRows), box2.w, ems(layoutRows)}},
         {"grainReadout", "box 2", "C1 grain readout, two lines of room",
-         {box2.x, stackTop + ems(2), box2.w, ems(2)}},
+         {box2.x, stackTop + ems(statusRows + layoutRows), box2.w, ems(grainRows)}},
         {"blendReadout", "box 2", "C1 blend readout holding the stack's bottom",
-         {box2.x, stackTop + ems(4), box2.w, ems(2)}},
-        {"volumeCaption", "box 2", "C1 group caption across the box's bottom edge",
-         {box2.x, headingTop, box2.w, captionCap}},
+         {box2.x, stackTop + ems(statusRows + layoutRows + grainRows), box2.w, ems(blendRows)}},
+        {"levelCaption", "box 2", "C1 group caption across the box's bottom edge",
+         {box2.x, headingTop, box2.w, captionBand}},
         {"eqCaption", "box 2", "C1 rotated caption in the box's right edge",
-         {box2.right() - rotatedCap - rotatedInset, box2.y, rotatedCap + rotatedInset, box2.h}},
+         {box2.right() - rotatedBand - rotatedInset, box2.y, rotatedBand + rotatedInset, box2.h}},
         {"vibesCaption", "box 4", "C1 rotated caption taking the cell's left edge",
          {box4.x, box4.y, box4.w, box4.h}},
         {"blend", "box 4", "C1 dial inscribed in what the caption column leaves",
-         {box4.x + labelColumn, box4.y + (box4.h - dialSide) / 2, dialSide, dialSide}},
+         {box4.x + dialColumn, box4.y + (box4.h - dialSide) / 2, dialSide, dialSide}},
         {"normalisationAmount", "box 6", "C1 Amt bar at the group's first row",
          {box6.x, box6.y, box6.w, body}},
         {"silenceFloor", "box 6", "C1 Flr bar at the group's second row",
          {box6.x, box6.y + pitch, box6.w, body}},
         {"windowCaption", "box 9", "C1 group caption at the box's top edge",
-         {box9.x, box9.y, box9.w, captionCap}},
-        {"grainLength", "box 9", "C1 grain choice above the hop choice",
-         {box9.x, box9.bottom() - body - pitch, box9.w, body}},
-        {"hop", "box 9", "C1 hop choice closing the box's bottom edge",
-         {box9.x, box9.bottom() - body, box9.w, body}},
+         {box9.x, box9.y, box9.w, captionBand}},
+        {"grainLabel", "box 9", "C1 the word that names the grain row",
+         {box9.x, box9.bottom() - body - pitch, choiceColumn, body}},
+        {"grainLength", "box 9", "C1 grain choice above the hop choice, inset by its label",
+         {box9.x + choiceColumn, box9.bottom() - body - pitch, box9.w - choiceColumn, body}},
+        {"hopLabel", "box 9", "C1 the word that names the hop row",
+         {box9.x, box9.bottom() - body, choiceColumn, body}},
+        {"hop", "box 9", "C1 hop choice closing the box's bottom edge, inset by its label",
+         {box9.x + choiceColumn, box9.bottom() - body, box9.w - choiceColumn, body}},
     }};
 
     for (const Expectation &want : expectations)
@@ -5118,7 +5262,16 @@ bool shellGeometryFollowsTheGrid(MatrixReport &report)
         report.line(false, "box 10", "C1 rotated caption naming the reserved span", "no component");
     else
         expectRect(report, "box 10", "C1 rotated caption naming the reserved span", waveform->getBounds(),
-                   {box10.right() - rotatedCap - rotatedInset, box10.y, rotatedCap + rotatedInset, box10.h});
+                   {box10.right() - rotatedBand - rotatedInset, box10.y, rotatedBand + rotatedInset, box10.h});
+
+    /* The column is one number with three consumers — the painted body, the value's start, the pointer's mapping
+       — and the shell's layout pass is the only writer. If the carrier disagrees with the words, the drag region
+       and the words are already on different numbers (01 risk 1). */
+    auto *skin = dynamic_cast<ui::Theme *>(&rig.editor->getLookAndFeel());
+    report.line(skin != nullptr && skin->labelColumnPx(grid.k()) == labelColumn, "box 6",
+                "C1 the column the shell placed with is the column its words ask for",
+                juce::String::formatted("carrier %d, widest label %d",
+                                        skin != nullptr ? skin->labelColumnPx(grid.k()) : -1, labelColumn));
 
     /* The two relations the spec states in words rather than in a rect: one pitch across the master strip and
        the level-stage group, and three rows at that pitch closing box 6 — the 0.85 mm the mockup's own pitch
@@ -5148,8 +5301,8 @@ bool shellGeometryFollowsTheGrid(MatrixReport &report)
         }
     }
     report.line(intruders == 0, "boxes 3, 5", "C7 no component occupies a reserved cell",
-                intruders == 0 ? juce::String("20 children, none in a reserved cell") : intruderNames);
-    report.line(rig.editor->getNumChildComponents() == 20, "sheet", "C1 twenty components, no spare",
+                intruders == 0 ? juce::String("22 children, none in a reserved cell") : intruderNames);
+    report.line(rig.editor->getNumChildComponents() == 22, "sheet", "C1 twenty-two components, no spare",
                 juce::String::formatted("%d children", rig.editor->getNumChildComponents()));
 
     /* The stack in box 2 grows upward when the typeface is taller than the one this was fitted to, so the
@@ -5190,10 +5343,12 @@ bool shellGeometryFollowsTheGrid(MatrixReport &report)
        once already: counting the cap band on top of every line's em reserved 200 px in a 183 px cell, and
        stepping the lines off each other's rounded bottoms drifted 4 px between the reference sheet and a window
        0.75x it. */
-    report.line(stack <= box2.h - captionCap, "box 2",
-                "C1 the stack's reserve is six ems, and fits above the heading",
-                juce::String::formatted("em %.3f px, reserve %d of %d, ground %d above the top line",
-                                        microEm, stack, box2.h - captionCap, box2.h - captionCap - stack));
+    const int stackReserve = ems(statusRows + layoutRows + grainRows + blendRows);
+    report.line(stackReserve <= box2.h - captionBand, "box 2",
+                "C1 the stack's reserve is its measured lines in ems, and fits above the heading",
+                juce::String::formatted("em %.3f px, %d lines, reserve %d of %d, ground %d above the top line",
+                                        microEm, statusRows + layoutRows + grainRows + blendRows, stackReserve,
+                                        box2.h - captionBand, box2.h - captionBand - stackReserve));
     return true;
 }
 
@@ -5330,22 +5485,283 @@ bool theWindowScalesTheSheet(MatrixReport &report)
     return true;
 }
 
+/* The face row (M11 01 §0 H; c14, c17): what the binary carries, what that face measures, and what each role
+   draws with it at the reference window.
+
+   Identity is nameID 6 read out of the embedded bytes — JUCE exposes nameID 1/2 only, and on this family a Light
+   reports its own weight-specific family with style "Regular", so a style-string check passes on a face nobody
+   declared (F-030). The metrics are the figures the cap-hold re-fit was computed from, and `capHeightOf` per role
+   is c14's before/after row: the same build with the previous face in it gives the other column. Coverage is every
+   codepoint the shell can put on the sheet asked of both faces, with U+2192 as the control that proves the walk can
+   see an absence — it is not in this family, and it is not on the sheet. */
+bool theFaceRowNamesWhatTheBinaryCarries(MatrixReport &report)
+{
+    /* The vocabulary walk needs the live sheet; the cap column needs a skin and no window. The hold is linear in
+       `k`, so it is checked at the ramp's own scale (k = 1), where the table's em figures live. */
+    ShellRig rig{harness::kStereoWithB, kDefault};
+    ui::Theme theme;
+
+    struct FaceRow
+    {
+        ui::TypeWeight weight;
+        const char *expected;
+        const char *vendored;
+    };
+    static constexpr FaceRow rows[]
+        = {{ui::TypeWeight::light, "ClashDisplay-Light", "public/ClashDisplay_Complete/Fonts/OTF/ClashDisplay-Light.otf"},
+           {ui::TypeWeight::bold, "ClashDisplay-Bold", "public/ClashDisplay_Complete/Fonts/OTF/ClashDisplay-Bold.otf"}};
+
+    std::array<ui::FaceFigures, 2> figureSets{};
+    std::array<harness::FaceMetrics, 2> declaredSets{};
+    std::array<std::string, 2> postScriptNames{};
+    bool named = true;
+    bool instrumentsAgree = true;
+
+    for (std::size_t i = 0; i < 2; ++i)
+    {
+        const auto data = ui::embeddedFaceData(rows[i].weight);
+        const auto names = harness::readFontNames(data.data(), data.size());
+        const auto figures = ui::faceFiguresFor(rows[i].weight);
+        const auto declared = harness::readFaceMetrics(data.data(), data.size());
+        declaredSets[i] = declared;
+        figureSets[i] = figures;
+        postScriptNames[i] = names.postScript;
+
+        named = named && names.postScript == rows[i].expected;
+
+        /* Two instruments on the same bytes: `declared` reads the tables that declare the figures, `figures`
+           draws the outline and reads back what JUCE laid out. Agreement is the check that the second one is
+           measuring what the first says — the one that caught the line-box-as-em error, where every figure
+           this row prints came out 11 % large. */
+        const float capGap = std::abs (figures.capPerEm - declared.capPerEm);
+        const float xGap = std::abs (figures.xPerEm - declared.xHeightPerEm);
+        float digitGap = 0.0f;
+        for (std::size_t d = 0; d < 10; ++d)
+            digitGap = std::max (digitGap, std::abs (figures.digitAdvancePerEm[d]
+                                                     - declared.digitAdvancePerEm[d]));
+        instrumentsAgree = instrumentsAgree && declared.unitsPerEm != 0 && capGap <= 0.02f && xGap <= 0.02f
+                           && digitGap <= 0.02f;
+
+        /* `names` is what the bytes declare (the legacy nameID 1/2 pair), `typefaceDescriptionFor` what JUCE
+           reports for the same face — the typographic pair, nameID 16/17, which is why the two differ here and
+           why neither of them is the identity claim this row makes (F-030). */
+        std::cout << juce::String::formatted("       %-6s %-19s %-20s / %-10s %7u B  upem %u   JUCE: %s\n",
+                                             rows[i].weight == ui::TypeWeight::light ? "light" : "bold",
+                                             names.postScript.c_str(), names.family.c_str(),
+                                             names.style.c_str(), static_cast<unsigned>(data.size()),
+                                             declared.unitsPerEm,
+                                             ui::typefaceDescriptionFor (rows[i].weight).toRawUTF8())
+                          .toRawUTF8();
+        std::cout << juce::String::formatted("              declared cap %.4f em  x %.4f em  hhea %.4f/%.4f"
+                                             " em   |  drawn cap %.4f em  x %.4f em\n",
+                                             declared.capPerEm, declared.xHeightPerEm,
+                                             declared.hheaAscentPerEm, declared.hheaDescentPerEm,
+                                             figures.capPerEm, figures.xPerEm)
+                          .toRawUTF8();
+        /* The line box as JUCE gives it, three ways: the face alone, the face with the ramp's declared pair, and
+           the sum. Whether the face's own pair already normalises to the declared split is what says if the
+           override is load-bearing, and it is not obvious from the tables. */
+        std::cout << juce::String::formatted("              layout line box, fraction of the height:"
+                                             " declared %.4f/%.4f  face's own %.4f/%.4f\n",
+                                             figures.lineAscentFraction, figures.lineDescentFraction,
+                                             figures.faceAscentFraction, figures.faceDescentFraction)
+                         .toRawUTF8();
+
+        juce::String digits;
+        for (std::size_t d = 0; d < 10; ++d)
+            digits << juce::String::formatted(" %.0f", declared.digitAdvancePerEm[d] * 1000.0f);
+        std::cout << juce::String::formatted("              digit advances per em, declared:%s\n",
+                                             digits.toRawUTF8())
+                         .toRawUTF8();
+
+        digits = {};
+        for (std::size_t d = 0; d < 10; ++d)
+            digits << juce::String::formatted(" %.0f", figures.digitAdvancePerEm[d] * 1000.0f);
+        std::cout << juce::String::formatted("                                    drawn:%s   gap cap %.3f x"
+                                             " %.3f digit %.3f em\n",
+                                             digits.toRawUTF8(), capGap, xGap, digitGap)
+                         .toRawUTF8();
+    }
+
+    report.line(named, "sheet", "C14 the binary carries the two vendored faces, by PostScript name",
+                juce::String::formatted("%s + %s", postScriptNames[0].c_str(), postScriptNames[1].c_str()));
+
+    /* c12's byte halves: the binary holds the file in the tree, and the file in the tree is still the drop the
+       licence was read on — a subset keeps the PostScript name and draws the same sheet, so only a pinned weight
+       says the payload was cut (D-037). A tree with no vendored files makes both red rather than skipping. */
+    const std::array<int, 2> kDropBytes{27000, 25276};
+    bool fullBytes = true;
+    bool uncut = true;
+    juce::String byteRow;
+    for (int i = 0; i < 2; ++i)
+    {
+        const juce::File vendored{juce::File{ENTANGLE_SOURCE_DIR}.getChildFile(rows[i].vendored)};
+        const auto inBinary = ui::embeddedFaceData(rows[i].weight);
+        const auto onDisk = static_cast<int>(vendored.getSize());
+        fullBytes = fullBytes && onDisk > 0 && static_cast<std::size_t>(onDisk) == inBinary.size();
+        uncut = uncut && onDisk == kDropBytes[i];
+        byteRow << (i == 0 ? "" : ", ") << vendored.getFileName() << " " << static_cast<int>(inBinary.size())
+                << " B in the binary against " << onDisk << " B in the tree against " << kDropBytes[i]
+                << " B on record";
+    }
+    report.line(fullBytes, "sheet", "C12 the embedded bytes are the vendored file, not a subset of it", byteRow);
+    report.line(uncut, "sheet", "C12 the vendored file is the drop the licence was read on, not a trimmed one",
+                byteRow);
+    report.line(instrumentsAgree, "sheet",
+                "C14 the drawn figures match the ones the face declares",
+                instrumentsAgree ? "cap, x and all ten advances within 0.02 em of the tables"
+                                 : "the two instruments disagree");
+
+    /* Two weights are two faces when the bytes say so: a distinct PostScript name and at least one declared
+       figure that differs. On the previous family every digit advance was equal in both weights — tabular by
+       design — so the digit comparison alone would have called a Light and a Bold the same face. */
+    const bool distinctNames = postScriptNames[0] != postScriptNames[1];
+    bool distinctFigures = declaredSets[0].capPerEm != declaredSets[1].capPerEm
+                           || declaredSets[0].hheaAscentPerEm != declaredSets[1].hheaAscentPerEm
+                           || declaredSets[0].hheaDescentPerEm != declaredSets[1].hheaDescentPerEm;
+    for (std::size_t d = 0; d < 10 && !distinctFigures; ++d)
+        distinctFigures = declaredSets[0].digitAdvancePerEm[d] != declaredSets[1].digitAdvancePerEm[d];
+    report.line(distinctNames && distinctFigures, "sheet",
+                "C14 the two weights are two faces, not one face twice",
+                distinctNames && distinctFigures ? "distinct name and declared figures"
+                                                 : "indistinguishable by name and figures");
+
+    /* The design's weight map, pinned the way the words and the cap figures are: light everywhere but the wordmark
+       and the figures. An expectation read back from `typeSpec` would be a tautology — a role that changed weight
+       would still agree with itself — so the row compares the ramp and the resolved face against the map here. */
+    const struct
+    {
+        ui::TypeRole role;
+        ui::TypeWeight weight;
+    } weightOf[]{{ui::TypeRole::wordmark, ui::TypeWeight::bold},
+                 {ui::TypeRole::caption, ui::TypeWeight::light},
+                 {ui::TypeRole::barLabel, ui::TypeWeight::light},
+                 {ui::TypeRole::barValue, ui::TypeWeight::light},
+                 {ui::TypeRole::rotatedCaption, ui::TypeWeight::light},
+                 {ui::TypeRole::figure, ui::TypeWeight::bold},
+                 {ui::TypeRole::micro, ui::TypeWeight::light}};
+
+    juce::String map;
+    bool consistent = true;
+    for (const auto &want : weightOf)
+    {
+        const auto names = harness::readFontNames(ui::embeddedFaceData(want.weight).data(),
+                                                  ui::embeddedFaceData(want.weight).size());
+        const auto resolved = ui::makeFont(want.role, 1.0f).getTypefacePtr();
+        const bool declared = ui::typeSpec(want.role).weight == want.weight;
+        const bool sameFace = resolved.get() == ui::typefaceFor(want.weight).get();
+
+        consistent = consistent && declared && sameFace && !names.postScript.empty();
+        map << (map.isEmpty() ? "" : " ") << roleName(want.role)
+            << (declared && sameFace ? "=" : "!= want ") << names.postScript.c_str();
+    }
+    report.line(consistent, "sheet", "C14 every role resolves to the face the design weights it with",
+                map.trim());
+
+    /* The cap the sheet places by, per role at the ramp's own scale, against the cap the same role drew on the face
+       that left. Six hold to a hundredth of a pixel; `barLabel` does not and its expectation is the ruled-down
+       figure — the row pitch it shares with the j in "Adj" is the fixed thing, so the role moved and the word did
+       not (D-031). Both columns print; the shortfall is recorded, not absorbed. */
+    struct CapHold
+    {
+        ui::TypeRole role;
+        double wasPx;
+        double expectPx;
+        const char *note;
+    };
+
+    const CapHold holds[]{{ui::TypeRole::wordmark, 50.74, 50.74, ""},
+                          {ui::TypeRole::caption, 44.40, 44.40, ""},
+                          {ui::TypeRole::barLabel, 63.43, 50.36, " — ruled to em 67.5 for the j in Adj"},
+                          {ui::TypeRole::barValue, 49.95, 49.95, ""},
+                          {ui::TypeRole::rotatedCaption, 41.23, 41.23, ""},
+                          {ui::TypeRole::figure, 27.75, 27.75, ""},
+                          {ui::TypeRole::micro, 17.44, 17.44, ""}};
+
+    bool caps = true;
+    double worstDelta = 0.0;
+    for (const CapHold &hold : holds)
+    {
+        const float cap = theme.capHeightOf(hold.role, 1.0f);
+        const auto &spec = ui::typeSpec(hold.role);
+        const double delta = cap - hold.expectPx;
+        const bool held = cap > 0.0f && std::abs(delta) <= 1.0;
+
+        caps = caps && held;
+        worstDelta = std::max(worstDelta, std::abs(cap - hold.wasPx));
+        std::cout << juce::String::formatted("       %-16s em %5.1f px  squeeze %.2f  cap %6.2f px  was %6.2f"
+                                             "  delta %+5.2f  (%s)%s\n",
+                                             roleName(hold.role), spec.emPx, spec.horizontalScale, cap,
+                                             hold.wasPx, cap - hold.wasPx,
+                                             spec.weight == ui::TypeWeight::bold ? "bold" : "light",
+                                             held ? "" : "  DOES NOT HOLD")
+                          .toRawUTF8();
+        if (hold.note[0] != '\0')
+            std::cout << juce::String::formatted("              expected %.2f px instead of the outgoing"
+                                                 " figure%s\n",
+                                                 hold.expectPx, hold.note)
+                              .toRawUTF8();
+    }
+    report.line(caps, "sheet", "C14 the cap height the sheet places by holds within 1 px of the outgoing face",
+                juce::String::formatted("%d roles, worst delta %.2f px; barLabel holds the ruled figure, not the"
+                                        " outgoing one",
+                                        static_cast<int>(ui::kRoleCount), worstDelta));
+
+    /* Coverage. The vocabulary is what the shell can actually show: every word on the tree, plus the characters
+       the readout formatters emit (digits, the sign, the separators, the unit letters). */
+    std::u32string vocabulary;
+    auto addWords = [&vocabulary](const juce::String &words) {
+        for (auto it = words.begin(); it != words.end(); ++it)
+        {
+            const char32_t c = *it;
+            if (std::find(vocabulary.begin(), vocabulary.end(), c) == vocabulary.end())
+                vocabulary.push_back(c);
+        }
+    };
+    for (auto *child : rig.editor->getChildren())
+    {
+        if (auto *text = dynamic_cast<ui::Text *>(child); text != nullptr)
+            addWords(text->getText());
+        else if (auto *bar = dynamic_cast<ui::Bar *>(child); bar != nullptr)
+        {
+            addWords(bar->labelWords());
+            addWords(bar->valueWords());
+        }
+        else if (auto *choice = dynamic_cast<ui::ChoiceBar *>(child); choice != nullptr)
+            addWords(choice->getItemText(choice->getSelectedItemIndex()));
+        else if (auto *button = dynamic_cast<juce::TextButton *>(child); button != nullptr)
+            addWords(button->getButtonText());
+    }
+    addWords(juce::String("0123456789.,-+/%:()xmsdBRHL"));
+
+    int missing = 0;
+    juce::String missingWords;
+    for (const ui::TypeWeight weight : ui::kAllWeights)
+        for (const char32_t c : vocabulary)
+            if (!ui::faceHasGlyph(weight, c))
+            {
+                ++missing;
+                missingWords << juce::String::formatted(" U+%d", static_cast<int>(c));
+            }
+
+    const bool arrowAbsent = !ui::faceHasGlyph(ui::TypeWeight::light, U'\u2192');
+    std::cout << juce::String::formatted("       %d codepoints on the sheet's vocabulary, %d missing;"
+                                         " control U+2192 %s\n",
+                                         static_cast<int>(vocabulary.size()), missing,
+                                         arrowAbsent ? "absent, as it is from this family" : "present")
+                      .toRawUTF8();
+    report.line(missing == 0 && arrowAbsent, "sheet",
+                "C1 every codepoint the sheet can print has a glyph in both faces",
+                missing == 0
+                    ? juce::String("0 of ") + juce::String(static_cast<int>(vocabulary.size())) + " missing"
+                    : "missing:" + missingWords);
+    return true;
+}
+
 /* ---------------------------------------------------------------- C1, second half ---
-   Every word on the sheet measured at its own role against the length its box gives it.
-
-   The mockup draws its words *cell-width*: "Entangle" runs from the sheet's 10 mm margin to the right edge of
-   box 1 and no further, "Volume Ctrl" the same across box 2, "Waveform" the same up a cell, and the three-letter
-   bar labels the same across the 20 mm column the mockup gives them. None of them has slack, so the only thing
-   that can overrun a box is the typeface the host actually resolves — and F-022 is exactly that substitution:
-   JUCE 9 hands back no typeface for a family fontconfig cannot match, and `FontFactory` falls back. This is the
-   measurement that turns that finding into figures instead of a look at a screenshot, and `GlyphArrangement
-   ::getStringWidth` is the API that makes it possible from outside a paint (the one F-023 item 8 looked for on
-   `Font` and did not find there).
-
-   What is gated is the half that stays true for the right reason whichever face is present: no word may lose
-   more than half of itself. A role misassigned — a caption drawn at `barLabel`, a readout at `caption` — breaks
-   it immediately, and a host that resolves the declared face only moves the rows toward fitting. What is printed
-   is every row, because a reader looking at a clipped "Volume" should be able to see how far short it fell. */
+   Every word the sheet draws, measured at its own role against the room its placer gave it — both axes, three
+   window widths, in the face that ships. Zero slack on width, and enough reserve for every line a wrap makes:
+   cap and descent off the glyph outlines, never `getAscent()`. `tools/AGENTS.md` carries the fit rules. */
 bool wordsAgainstTheirBoxes(MatrixReport &report)
 {
     ShellRig rig{harness::kStereoWithB, kDefault};
@@ -5353,91 +5769,258 @@ bool wordsAgainstTheirBoxes(MatrixReport &report)
     if (theme == nullptr)
         return report.line(false, "sheet", "C1 the editor wears the kit skin to be measured in", "no ui::Theme");
 
-    const ui::Grid grid = ui::Grid::reference();
-    const float rampScale = ui::Theme::fontScaleFor(grid.k());
-    const int labelColumn = ui::BarGeometry::labelColumnAt(grid.k());
-    const int valueInset = ui::BarGeometry::valueInsetAt(grid.k());
-
-    struct Word
+    struct Row
     {
         juce::String where;
         juce::String words;
-        int available = 0;
-        double needed = 0.0;
+        ui::TypeRole role;
+        int room{};     // px along the run: the component's width, or the rotated extent
+        int reserve{};  // px across it: the height the placer kept, or a rotated caption's band
     };
-    std::vector<Word> rows;
 
-    for (auto *child : rig.editor->getChildren())
+    auto greedyLines = [theme](const juce::String &words, ui::TypeRole role, float scale, int roomPx)
     {
-        if (auto *text = dynamic_cast<ui::Text *>(child); text != nullptr)
+        juce::StringArray parts;
+        parts.addTokens(words, " ", "");
+        const double space = theme->measureText(" ", role, scale).extent.advancePx;
+
+        int lines = 1;
+        double line = 0.0;
+
+        for (const juce::String &part : parts)
         {
-            const int length = text->orientation() == ui::TextOrientation::rotated ? text->getHeight()
-                                                                                   : text->getWidth();
-            rows.push_back({text->getName() + "/" + roleName(text->role()), text->getText(), length,
-                            static_cast<double>(juce::GlyphArrangement::getStringWidth(
-                                theme->fontFor(text->role(), rampScale), text->getText()))});
-            continue;
+            const double width = theme->measureText(part, role, scale).extent.advancePx;
+
+            if (line > 0.0 && line + space + width > roomPx)
+            {
+                ++lines;
+                line = width;
+            }
+            else
+            {
+                line += (line > 0.0 ? space : 0.0) + width;
+            }
         }
 
-        if (auto *bar = dynamic_cast<ui::Bar *>(child); bar != nullptr)
+        return lines;
+    };
+
+    int checked = 0;
+    int offenders = 0;
+    double worstOver = 0.0;
+    juce::String worst{"none"};
+    juce::String firstRed;
+
+    for (const int width : {ui::kMinimumWindowWidthPx, ui::kReferenceWindowWidthPx, ui::kMaximumWindowWidthPx})
+    {
+        rig.editor->setSize(width, static_cast<int>(std::lround(width / ui::kSheetAspectRatio)));
+        const ui::Grid grid(width, rig.editor->getHeight());
+        const double k = grid.k();
+        const float rampScale = ui::Theme::fontScaleFor(k);
+        const int labelColumn = theme->labelColumnPx(k);
+        const int valueInset = ui::BarGeometry::valueInsetAt(k);
+
+        std::vector<Row> rows;
+
+        for (auto *child : rig.editor->getChildren())
         {
-            rows.push_back({bar->getName() + " label", bar->labelWords(), labelColumn,
-                            static_cast<double>(juce::GlyphArrangement::getStringWidth(
-                                theme->fontFor(ui::TypeRole::barLabel, rampScale), bar->labelWords()))});
-            continue;
+            if (auto *text = dynamic_cast<ui::Text *>(child); text != nullptr)
+            {
+                const juce::Rectangle<int> b = text->getBounds();
+                const ui::Rect box{b.getX(), b.getY(), b.getWidth(), b.getHeight()};
+
+                rows.push_back(text->orientation() == ui::TextOrientation::rotated
+                                   ? Row{text->getName(), text->getText(), text->role(),
+                                         ui::rotatedPlacementFor(box, k).extentPx, box.w}
+                                   : Row{text->getName(), text->getText(), text->role(), box.w, box.h});
+                continue;
+            }
+
+            if (auto *bar = dynamic_cast<ui::Bar *>(child); bar != nullptr)
+            {
+                /* The same single number the skin lays the track out with: the widget is the cell, less the
+                   label column on its left. A body worked out here from anything else is a lookalike. */
+                const int bodyWidth = std::max(0, child->getWidth() - labelColumn);
+
+                if (!bar->labelWords().isEmpty())
+                    rows.push_back({bar->getName() + " label", bar->labelWords(), ui::TypeRole::barLabel,
+                                    labelColumn, child->getHeight()});
+
+                if (!bar->valueWords().isEmpty())
+                    rows.push_back({bar->getName() + " value", bar->valueWords(), ui::TypeRole::barValue,
+                                    std::max(0, bodyWidth - valueInset), child->getHeight()});
+                continue;
+            }
+
+            if (auto *choice = dynamic_cast<ui::ChoiceBar *>(child); choice != nullptr)
+                rows.push_back({choice->getName() + " item", choice->getItemText(choice->getSelectedItemIndex()),
+                                ui::TypeRole::barValue, std::max(0, child->getWidth() - 2 * valueInset),
+                                child->getHeight()});
         }
 
-        if (auto *choice = dynamic_cast<ui::ChoiceBar *>(child); choice != nullptr)
+        /* D-038 gives the blend readout three sentences and a live rig wears one, so both end states are
+           measured against the same box and reserve. The pin clause is not: the shell sizes the stack from the
+           text it is actually wearing, so its four-line wrap at the minimum width reserves four lines there. */
+        if (auto *blendText = dynamic_cast<ui::Text *>(childNamed(*rig.editor, "blendReadout"));
+            blendText != nullptr)
         {
-            const int body = choice->getWidth() - 2 * valueInset;
-            rows.push_back({choice->getName() + " item", choice->getItemText(choice->getSelectedItemIndex()), body,
-                            static_cast<double>(juce::GlyphArrangement::getStringWidth(
-                                theme->fontFor(ui::TypeRole::barValue, rampScale),
-                                choice->getItemText(choice->getSelectedItemIndex())))});
-            continue;
+            const juce::Rectangle<int> box = blendText->getBounds();
+            for (const juce::String words : {"Blend 0.50 dry A + wet", "Blend 0.00 fully dry A"})
+                rows.push_back({"blendReadout end", words, blendText->role(), box.getWidth(),
+                                box.getHeight()});
         }
 
-        if (auto *button = dynamic_cast<juce::TextButton *>(child); button != nullptr)
+        /* The meter is the one bar that carries value words, and the shell only fills them once a trace arrives, so
+           the row comes from the shell's own format at the widest figure it can produce — a sign and whole decibels
+           up to ±gainRangeDb (`updateMeter`) — rather than being skipped because this rig happens to be idle. */
+        if (auto *meter = dynamic_cast<ui::Bar *>(childNamed(*rig.editor, "appliedCorrection"));
+            meter != nullptr && meter->valueWords().isEmpty())
+            rows.push_back({"appliedCorrection value",
+                            juce::String("-") + juce::String(dsp::LevelNormalizer::gainRangeDb, 0),
+                            ui::TypeRole::barValue,
+                            std::max(0, meter->getWidth() - labelColumn - valueInset), meter->getHeight()});
+
+        std::cout << juce::String::formatted("   --- %d px wide, k=%.3f, label column %d px\n", width, k,
+                                             labelColumn)
+                          .toRawUTF8();
+
+        for (const Row &row : rows)
         {
-            rows.push_back({button->getName() + " face", button->getButtonText(), button->getWidth(),
-                            static_cast<double>(juce::GlyphArrangement::getStringWidth(
-                                theme->getTextButtonFont(*button, button->getHeight()),
-                                button->getButtonText()))});
+            const auto run = theme->measureText(row.words, row.role, rampScale);
+            const bool oneWord = !row.words.containsChar(' ');
+            const int lines = ui::fitsWidth(run.extent, row.room) || oneWord
+                                  ? 1
+                                  : greedyLines(row.words, row.role, rampScale, row.room);
+            /* Rounded once, at the end, by the same rule the placer uses: the first line's ink plus one unrounded
+               pitch per extra line. Rounding the ink and each pitch separately charges the box for fractions it
+               never draws. */
+            const int neededY = ui::stackReservePx(run.extent.capPx + run.extent.descentPx, lines,
+                                                   run.lineHeightPx);
+            const bool fitsX = ui::fitsWidth(run.extent, row.room);
+            const bool holdsY = neededY <= row.reserve;
+            const bool ok = holdsY && (fitsX || !oneWord);
+
+            ++checked;
+            if (!ok && firstRed.isEmpty())
+            {
+                ++offenders;
+                firstRed = juce::String::formatted("%s \"%s\" %.1f px into %d px; %d line(s) of %.1f px needing "
+                                                   "%d of %d px",
+                                                   row.where.toRawUTF8(), row.words.toRawUTF8(),
+                                                   run.extent.advancePx, row.room, lines, run.lineHeightPx,
+                                                   neededY, row.reserve);
+            }
+            else
+            {
+                offenders += ok ? 0 : 1;
+            }
+
+            const double over = run.extent.advancePx - row.room;
+            if (over > worstOver)
+            {
+                worstOver = over;
+                worst = row.where + " \"" + row.words + "\"";
+            }
+
+            std::cout << juce::String::formatted("       %-24s %-24s %7.1f / %4d px  %d line x %5.1f px in %3d px  %s%s\n",
+                                                 row.where.toRawUTF8(), row.words.toRawUTF8(),
+                                                 run.extent.advancePx, row.room, lines, run.lineHeightPx,
+                                                 row.reserve, ok ? "ok" : "OVER",
+                                                 oneWord ? " (one word)" : "")
+                              .toRawUTF8();
+
+            /* c6 — the label clears the value it sits next to, by the column the paint and the drag region
+               both use. Only a labelled bar can fail it; a meter has no label. */
+            if (row.where.endsWith(" label"))
+            {
+                const bool clears = ui::labelClearsValue(run.extent.advancePx, row.room);
+                ++checked;
+                offenders += clears ? 0 : 1;
+                std::cout << juce::String::formatted("       %-24s %-24s %7.1f + 1 <= %4d px  %s\n", "",
+                                                     "(c6 clears its value)", run.extent.advancePx, row.room,
+                                                     clears ? "ok" : "COLLIDES")
+                                  .toRawUTF8();
+            }
         }
     }
 
-    int worstPercent = 0;
-    juce::String worst{"none"};
-    int over = 0;
+    /* c15 — the squeeze the ramp asks for and the scale the font carries. JUCE's
+       `getDefaultMinimumHorizontalScaleFactor` clamps what a fitted-text layout will apply, so a role whose
+       asked-for scale arrives as the floor while its words do not fit is the failure this item exists to catch
+       — printed, not assumed. */
+    int squeezeMismatch = 0;
+    std::cout << juce::String::formatted("       squeeze floor JUCE will not go below: %.2f\n",
+                                         theme->squeezeFloorAtConstruction())
+                     .toRawUTF8();
 
-    for (const Word &row : rows)
+    for (const ui::TypeRole role : ui::kAllRoles)
     {
-        const int deficit = static_cast<int>(std::ceil(row.needed)) - row.available;
-        const int percent = row.available > 0 ? (deficit * 100) / row.available : 0;
-        over += deficit > 0 ? 1 : 0;
-        if (percent > worstPercent)
-        {
-            worstPercent = percent;
-            worst = row.where;
-        }
-        std::cout << juce::String::formatted("       %-31s %-25s %7.1f px into %4d px  %s %d%%\n",
-                                             row.where.toRawUTF8(), row.words.toRawUTF8(), row.needed,
-                                             row.available, deficit > 0 ? "over by" : "spare",
-                                             deficit > 0 ? percent : -percent)
+        const ui::TypeSpec spec = ui::typeSpec(role);
+        const float carried = theme->fontFor(role, 1.0f).getHorizontalScale();
+        const bool equal = std::abs(carried - spec.horizontalScale) < 0.001f;
+        squeezeMismatch += equal ? 0 : 1;
+
+        std::cout << juce::String::formatted("       %-16s asked %.2f  carries %.4f  %s\n", roleName(role),
+                                             spec.horizontalScale, carried,
+                                             equal ? "ok" : "NOT WHAT WAS ASKED")
                           .toRawUTF8();
     }
 
-    std::cout << juce::String::formatted("       %d of %d words over their box; worst %s at %d%% over\n", over,
-                                         static_cast<int>(rows.size()), worst.toRawUTF8(), worstPercent)
-                      .toRawUTF8();
-    std::cout << "       A rotated caption's drawn length is the cell less its own inset, so a word at 100% of\n"
-                 "       the cell still breaks in the paint: \"Waveform\" at 226.8 of a 227 px cell is that row.\n";
+    /* c16 — the digit pitch. A readout that changes width as it changes value moves what was placed next to it
+       mid-drag, and the face has no `tnum` to switch on, so the skin sets the pitch itself. Both halves print:
+       with the rule the pair is one width, without it the pair is not — which is the proof the row measures the
+       rule and not a face that happens to be tabular. */
+    struct Pair
+    {
+        const char *left;
+        const char *right;
+        ui::TypeRole role;
+    };
 
-    /* Measured worst on this host,, at the resolved fallback face: see the line above. The bound is
-       half a word, which is a mile outside the worst the fallback produces and one role-step inside a mistake. */
-    report.line(worstPercent <= 50, "sheet", "C1 no word loses more than half its length to its box",
-                juce::String::formatted("%d of %d words overrun; worst %s at %d%% over", over,
-                                        static_cast<int>(rows.size()), worst.toRawUTF8(), worstPercent));
+    int pitchFailures = 0;
+
+    for (const Pair pair : {Pair{"-36", "-12", ui::TypeRole::barValue},
+                            {"1024", "8192", ui::TypeRole::barValue},
+                            {"2/2/2", "1/1/1", ui::TypeRole::micro},
+                            {"H128 L8192", "H256 L4096", ui::TypeRole::micro},
+                            {"8192 samples", "4096 samples", ui::TypeRole::micro}})
+    {
+        const double withRule = theme->measureText(pair.left, pair.role, 1.0f).extent.advancePx;
+        const double sameRule = theme->measureText(pair.right, pair.role, 1.0f).extent.advancePx;
+        const double withoutRule = juce::GlyphArrangement::getStringWidth(
+            theme->fontFor(pair.role, 1.0f), pair.left);
+        const double notTheRule = juce::GlyphArrangement::getStringWidth(
+            theme->fontFor(pair.role, 1.0f), pair.right);
+        const bool stable = std::abs(withRule - sameRule) <= 0.01;
+
+        pitchFailures += stable ? 0 : 1;
+        std::cout << juce::String::formatted("       %-12s pitched %.1f vs %.1f  unpitched %.1f vs %.1f  %s\n",
+                                             pair.left, withRule, sameRule, withoutRule, notTheRule,
+                                             stable ? "same width" : "REFLOWS")
+                          .toRawUTF8();
+    }
+
+    /* The sign is not a digit and takes no pitch, so the meter's digits shift by the difference between "+" and
+       "-" when the correction flips. Printed, not gated: the fill is behind the words and nothing sits beside
+       them, so the rule that stops a row moving has nothing to move here (F-030). */
+    std::cout << juce::String::formatted("       sign unpitched: \"+12\" %.1f vs \"-12\" %.1f px\n",
+                                         theme->measureText("+12", ui::TypeRole::barValue, 1.0f).extent.advancePx,
+                                         theme->measureText("-12", ui::TypeRole::barValue, 1.0f).extent.advancePx)
+                     .toRawUTF8();
+
+    report.line(offenders == 0, "sheet",
+                "C1 no word loses any of itself to its box, on either axis, at three widths",
+                offenders == 0
+                    ? juce::String::formatted("%d rows at 3 widths, 0 deficits; worst margin %s", checked,
+                                              worst.toRawUTF8())
+                    : (juce::String::formatted("%d of %d rows over; worst %s; first: ", offenders, checked,
+                                               worst.toRawUTF8()) + firstRed));
+    report.line(squeezeMismatch == 0, "sheet", "C15 every role carries the horizontal scale the ramp asked for",
+                juce::String::formatted("%d of %d roles arrive at a different scale", squeezeMismatch,
+                                        static_cast<int>(ui::kRoleCount)));
+    report.line(pitchFailures == 0, "sheet",
+                "C16 a numeric readout is the same width at every value, and the pitch is why",
+                juce::String::formatted("%d pairs differ once the pitch is off the run", pitchFailures));
     return true;
 }
 
@@ -5470,11 +6053,12 @@ bool sevenControlsDriveTheirParameters(MatrixReport &report)
         || grain == nullptr || bypass == nullptr)
         return false;
 
-    /* The blend dial is the bipolar one: a proportional dial could not show where "wet only" is, which is
-       what the single ink datum is for (`02` §0 C). */
-    report.line(dial->pieMode() == ui::PieMode::datumAtZero, "box 4",
-                "C2 the blend dial is the datum-at-zero one",
-                dial->pieMode() == ui::PieMode::datumAtZero ? "datumAtZero" : "proportional");
+    /* D-038 amended this leg: the blend dial was the datum-at-zero one because a proportional wedge could not
+       show where "wet only" was. It is [0, 1] now, the state the ends cannot show lives in the readout's words
+       (C9), and the ink count below is what holds "no datum" — not the absence of a paint call. */
+    report.line(dial->pieMode() == ui::PieMode::proportional, "box 4",
+                "C2 the blend dial is the proportional one (D-038)",
+                dial->pieMode() == ui::PieMode::proportional ? "proportional" : "datumAtZero");
 
     report.line(out->labelWords() == "Out" && amount->labelWords() == "Amt" && floor->labelWords() == "Flr",
                 "boxes 1, 6", "C2 the mockup's three-letter labels",
@@ -5558,7 +6142,7 @@ bool recalledStateReachesEveryWidget(MatrixReport &report)
     harness::setChoice(processor, EntangleAudioProcessor::grainLengthParameterId,
                        harness::indexOfLength(16384));
     harness::setFloat(processor, EntangleAudioProcessor::outputGainParameterId, -30.0f);
-    harness::setFloat(processor, EntangleAudioProcessor::blendParameterId, -0.75f);
+    harness::setBlendDial(processor, 0.25f);
     harness::setFloat(processor, EntangleAudioProcessor::normalisationAmountParameterId, 0.5f);
     harness::setFloat(processor, EntangleAudioProcessor::silenceFloorParameterId, -25.0f);
     harness::setBool(processor, EntangleAudioProcessor::bypassParameterId, true);
@@ -5715,8 +6299,10 @@ bool noSidechainSaysSoThreeWays(MatrixReport &report)
     /* Criterion 3's "no colour participates". A flat sheet in five tokens composites palette over palette, so
        every pixel is either a token, a blend of two — the antialiased glyph edges, which are the sheet's whole
        vocabulary of in-between colours — or a place where three of the skin's own fills genuinely overlap. The
-       dial is the one such place: the datum is filled over the wedge and the wedge over the face, so where the
-       datum's edge crosses the wedge's, no pair of tokens can account for the pixel. Two questions, and a stray
+       dial is the one such place: the wedge's antialiased edge lies over the face, which lies over the sheet, so
+       where that edge crosses, no pair of tokens can account for the pixel. (Before D-038 the datum's own edge
+       over the wedge was a second such place; the run now puts every off-line pixel on the live face and none
+       on the inert one.) Two questions, and a stray
        `orangered` answers at least one of them wrongly: nothing off the two-token lines outside the dial's own
        rect, and every off-line pixel anywhere still a combination of the five. A JUCE default grey would satisfy
        the second — a neutral *is* composite-able from these four pastels — which is why the first question is
@@ -5736,26 +6322,43 @@ bool noSidechainSaysSoThreeWays(MatrixReport &report)
                                         (darkOff.allCombinations && liveOff.allCombinations) ? "yes" : "no",
                                         liveOff.colourText().toRawUTF8()));
 
-    /* C5's pixel half: the datum-at-zero dial grows its wedge the other way on either side of the datum, and
-       both are distinguishable from the sheet's own surface. */
+    /* C5's pixel half, re-asked by D-038 against a proportional dial. The datum is gone from the product, so
+       the two claims are the ones A-2 leaves: no `ink` anywhere inside the disc at any dial position, and the
+       sweep grows with q — nothing at q = 0, where the face must therefore be plain `track`, and the fill
+       never shrinking as the dial rises. The angles are checked alongside so a disc that painted the wrong
+       sector could not pass on pixel counts alone. */
     auto *dial = liveDial;
     const juce::Rectangle<int> face = dial->getBounds();
+    bool sweepMonotone = true;
+    bool noInkAnywhere = true;
+    bool emptyAtZero = false;
+    std::cout << "       C5 dial travel on a proportional face (fill pixels / ink pixels / sweep over 2pi):\n";
+    int previousFill = -1;
+    for (const float q : {0.0f, 0.25f, 0.5f, 0.75f, 1.0f})
+    {
+        dial->setValue(q, juce::sendNotificationSync);
+        live.shell->refreshEngineTruths();
+        const juce::Image painted = paintShell(*live.editor);
+        const int fill = countToken(painted, face, ui::kFill);
+        const int ink = countToken(painted, face, ui::kInk);
+        const double turns = dial->wedge().sweepRadians() / ui::kFullTurnRadians;
+        std::cout << "         q=" << q << ": fill " << fill << ", ink " << ink << ", sweep " << turns
+                  << " turn, track " << countToken(painted, face, ui::kTrack) << "\n";
+        sweepMonotone = sweepMonotone && fill > previousFill
+                        && std::abs(turns - static_cast<double>(q)) <= 0.001;
+        previousFill = fill;
+        noInkAnywhere = noInkAnywhere && ink == 0;
+        if (q == 0.0f)
+            emptyAtZero = fill == 0 && countToken(painted, face, ui::kTrack) > 0;
+    }
+    report.line(sweepMonotone, "box 4", "C5 the wedge grows with q, within 0.1 % of 2*pi*q",
+                juce::String::formatted("five positions, fill strictly increasing, |sweep - q| <= 0.001 turn"));
+    report.line(noInkAnywhere, "box 4", "C5 no ink pixel inside the dial's disc at any q (D-038)",
+                "count exactly 0 at q = 0, 0.25, 0.5, 0.75, 1");
+    report.line(emptyAtZero, "box 4", "C5 q = 0 leaves the face plain track",
+                "fill 0 and track > 0 over the face");
     dial->setValue(0.5f, juce::sendNotificationSync);
     live.shell->refreshEngineTruths();
-    const juce::Image rightWedge = paintShell(*live.editor);
-    dial->setValue(-0.5f, juce::sendNotificationSync);
-    live.shell->refreshEngineTruths();
-    const juce::Image leftWedge = paintShell(*live.editor);
-
-    const int centreX = face.getX() + face.getWidth() / 2;
-    const int rightOfDatum = meanXOfToken(rightWedge, face, ui::kFill);
-    const int leftOfDatum = meanXOfToken(leftWedge, face, ui::kFill);
-    report.line(rightOfDatum > centreX && leftOfDatum >= 0 && leftOfDatum < centreX
-                    && countToken(rightWedge, face, ui::kInk) > 0,
-                "box 4", "C5 the wedge mirrors across the datum and the datum is ink",
-                juce::String::formatted("centre %d, +0.5 wedge mean x %d, -0.5 wedge mean x %d, ink pixels %d",
-                                        centreX, rightOfDatum, leftOfDatum,
-                                        countToken(rightWedge, face, ui::kInk)));
     return true;
 }
 
@@ -5834,9 +6437,10 @@ bool theReadoutsSpeakHeadsWordForWord(MatrixReport &report)
     ShellRig live{harness::kStereoWithB, kDefault};
     ShellRig dark{harness::kStereoNoB, kDefault};
 
-    const std::array<float, 4> dialPositions{0.0f, -0.5f, 0.5f, 0.5f};
-    const std::array<juce::String, 4> expected{{"Blend wet only", "Blend -0.50 (dry A)", "Blend 0.50 (dry B)",
-                                                "Blend -1.00 (dry A)  (dial 0.50: no sidechain, so the effect "
+    const std::array<float, 4> dialPositions{1.0f, 0.5f, 0.0f, 0.5f};
+    const std::array<juce::String, 4> expected{{"Blend 1.00 fully wet", "Blend 0.50 dry A + wet",
+                                                "Blend 0.00 fully dry A",
+                                                "Blend 0.00 fully dry A  (dial 0.50: no sidechain, so the effect "
                                                 "is pinned off)"}};
 
     for (std::size_t i = 0; i < expected.size(); ++i)
@@ -5862,6 +6466,92 @@ bool theReadoutsSpeakHeadsWordForWord(MatrixReport &report)
                 "C9 the grain readout with nothing clamped",
                 grain != nullptr ? grain->getText() : juce::String("missing"));
     return true;
+}
+
+/* C9 — the naming, word for word (01 C-3, c7): the words the user chose, where each one lives, and the quantity
+   it names. The second half is the rule rather than the list — every control on the sheet must appear in the
+   table, so a control that ships without a name reddens this leg by being absent from it. */
+bool eachControlNamesTheQuantityItSets(MatrixReport &report)
+{
+    ShellRig rig{harness::kStereoWithB, kDefault};
+
+    enum class Carrier
+    {
+        text,      /* a ui::Text of this id is the name */
+        barLabel,  /* the bar's own label words */
+        buttonText /* the button's own text */
+    };
+
+    struct Row
+    {
+        const char *control;  /* what the words name — the component name, which is its parameter id */
+        const char *nameId;   /* where the words live */
+        const char *want;
+        const char *sets;
+        Carrier carrier;
+    };
+
+    const Row rows[]{{"outputGain", "outputGain", "Out", "output gain", Carrier::barLabel},
+                     {"normalisationAmount", "normalisationAmount", "Amt", "normalisation amount",
+                      Carrier::barLabel},
+                     {"silenceFloor", "silenceFloor", "Flr", "the silence floor", Carrier::barLabel},
+                     {"appliedCorrection", "appliedCorrection", "Adj", "the correction the stage applies",
+                      Carrier::barLabel},
+                     {"bypass", "bypass", "Bypass", "the bypass", Carrier::buttonText},
+                     {"blend", "vibesCaption", "Vibes", "the blend", Carrier::text},
+                     {"hop", "hopLabel", "Hop", "hop size", Carrier::text},
+                     {"grainLength", "grainLabel", "Grain", "grain length", Carrier::text},
+                     {"level stage", "levelCaption", "Level Ctrl", "Out, Amt, Flr and the meter", Carrier::text},
+                     {"window cell", "windowCaption", "Window Size", "Grain and Hop", Carrier::text}};
+
+    int wrong = 0;
+    for (const Row &row : rows)
+    {
+        juce::String words;
+        if (row.carrier == Carrier::barLabel)
+        {
+            if (const auto *bar = rig.control<ui::Bar>(row.nameId))
+                words = bar->labelWords();
+        }
+        else if (row.carrier == Carrier::buttonText)
+        {
+            if (const auto *button = rig.control<juce::TextButton>(row.nameId))
+                words = button->getButtonText();
+        }
+        else if (const auto *text = rig.control<ui::Text>(row.nameId))
+            words = text->getText();
+
+        const bool named = words == row.want;
+        wrong += named ? 0 : 1;
+        report.line(named, "sheet", "C9 a control's words, verbatim",
+                    juce::String(row.control) + " named by " + row.nameId + ": \"" + words + "\", want \""
+                        + row.want + "\" (" + row.sets + ")");
+    }
+
+    /* The "each" half: walk the controls the sheet can hold and refuse one the table does not name. */
+    juce::String unnamed;
+    int controls = 0;
+    for (auto *child : rig.editor->getChildren())
+    {
+        const bool isControl = dynamic_cast<ui::Bar *>(child) != nullptr
+                               || dynamic_cast<ui::PieDial *>(child) != nullptr
+                               || dynamic_cast<ui::ChoiceBar *>(child) != nullptr
+                               || dynamic_cast<juce::TextButton *>(child) != nullptr;
+        if (!isControl)
+            continue;
+        ++controls;
+        const bool covered = std::any_of(std::begin(rows), std::end(rows), [child](const Row &row)
+                                         {
+                                             return juce::String(row.control) == child->getName();
+                                         });
+        if (!covered)
+            unnamed << " " << child->getName();
+    }
+    report.line(unnamed.trim().isEmpty() && controls == 8, "sheet",
+                "C9 every control on the sheet carries a name in the table",
+                juce::String::formatted("%d controls; unnamed:%s", controls,
+                                        unnamed.trim().isEmpty() ? " none" : unnamed.toRawUTF8()));
+    return wrong == 0 && unnamed.trim().isEmpty();
 }
 
 /** C7 — the reserved cells are provably empty: no child, and no pixel that is not `ground`. */
@@ -5997,12 +6687,14 @@ bool checkShellSheet()
     MatrixReport report;
     bool passed = shellGeometryFollowsTheGrid(report);
     passed = theWindowScalesTheSheet(report) && passed;
+    passed = theFaceRowNamesWhatTheBinaryCarries(report) && passed;
     passed = wordsAgainstTheirBoxes(report) && passed;
     passed = sevenControlsDriveTheirParameters(report) && passed;
     passed = recalledStateReachesEveryWidget(report) && passed;
     passed = noSidechainSaysSoThreeWays(report) && passed;
     passed = theClampIsVisible(report) && passed;
     passed = theReadoutsSpeakHeadsWordForWord(report) && passed;
+    passed = eachControlNamesTheQuantityItSets(report) && passed;
     passed = reservedCellsAreEmpty(report) && passed;
     passed = theReportIsWholeSomewhere(report) && passed;
     passed = aSteadyTickWritesNothing(report) && passed;

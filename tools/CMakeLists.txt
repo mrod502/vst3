@@ -9,7 +9,9 @@ target_sources(OfflineRender PRIVATE OfflineRender.cpp)
 target_compile_definitions(OfflineRender PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
-    JUCE_VST3_CAN_REPLACE_VST2=0)
+    JUCE_VST3_CAN_REPLACE_VST2=0
+    # The face row compares what the binary embeds against the vendored file on disk — c12's byte half.
+    ENTANGLE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 # vstplug is the plugin's shared code (libEntangle_SharedCode.a): the harness renders through
 # the same processor the VST3 bundle loads, instead of recompiling the shell.

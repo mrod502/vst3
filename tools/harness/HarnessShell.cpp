@@ -226,8 +226,8 @@ Stream renderReference(const Shape &shape, const Stream &a, const Stream &b, int
     return out;
 }
 
-/** The wet stream alone — the grain engine with no law in front of it — which is what the shell
-    renders at the dial's centre, where the dry weight is exactly 0 and the wet weight exactly 1. */
+/** The wet stream alone — the grain engine with no law in front of it — which is what the shell renders at
+    q = 1, where the dry weight is exactly 0 and the wet weight exactly 1. */
 Stream renderPureWet(const Shape &shape, const Stream &a, const Stream &b, int channels,
                      int sidechainChannels, const std::vector<int> &blocks)
 {
@@ -447,14 +447,14 @@ bool writeWav(const juce::File &file, const Stream &data)
 Stream renderAt(juce::AudioProcessor &processor, const Stream &a, const Stream *b, float dial,
                 float gainDb, bool bypassed, const std::vector<int> &blocks)
 {
-    if (!setFloat(processor, EntangleAudioProcessor::blendParameterId, dial)
+    if (!setBlendDial(processor, dial)
         || !setFloat(processor, EntangleAudioProcessor::outputGainParameterId, gainDb)
         || !setBool(processor, EntangleAudioProcessor::bypassParameterId, bypassed))
         return {};
     return render(processor, a, b, blocks);
 }
 
-const MixSetting kMatrixMix{0.0f, 0.0f, false, 0.0f, dsp::LevelNormalizer::defaultFloorDb};
+const MixSetting kMatrixMix{1.0f, 0.0f, false, 0.0f, dsp::LevelNormalizer::defaultFloorDb};
 
 bool parkLevelStage(juce::AudioProcessor &processor)
 {

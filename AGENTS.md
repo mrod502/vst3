@@ -122,9 +122,8 @@ cmake/                   # EntangleTestFramework.cmake — the pinned Catch2 wir
 src/                     # one directory per library, each with its own AGENTS.md
 tools/                   # harness/, OfflineRender, CpuBaseline, PrepareFootprint, UiProbe, UiAllocTests
 juce/                    # submodule: juce-framework/juce @ >= 9.0.4
-assets/fonts/            # the embedded faces and their licence text, tracked (D-037 names the grant)
-public/                  # the foundry's complete drop, tracked: variable file, italics, other weights, the
-                         #   outgoing Helvetica set. No build reads it — the CMake list names assets/fonts/ only
+public/                  # the foundry's complete drop, tracked: the two Clash Display OTFs the build embeds, plus
+                         #   the variable file, italics, other weights and the outgoing Helvetica set (D-037)
 docs/                    # decisions.md, host-layout-matrix.md
 build/<config>/          # host build trees; the container's live in the /ct/build volume
 ```

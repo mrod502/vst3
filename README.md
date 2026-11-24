@@ -16,15 +16,15 @@ graph LR
   A[Main input A] --> G[Grain cross-convolution]
   B[Sidechain input B] --> G
   G --> P[Cleanup and level match]
-  P --> M[Blend: dry ⇄ transformed]
+  P --> M[Blend: dry A ⇄ transformed]
   A --> M
-  B --> M
+  B -.->|sets the level target| P
   M --> L[Output limiter] --> OUT[Output]
 ```
 
 | Control | What it does |
 |---|---|
-| **Blend** | −1 keeps A's character, +1 takes B's, centre is the crossed pair |
+| **Blend** | 0 is A exactly as it came in, 1 is the fully transformed sound; between them the two crossfade at equal power |
 | **Hop size** | how often the engine steps — smaller is finer and costs more CPU |
 | **Grain length** | how long each slice of sound is remembered — longer smears further back |
 | **Output gain** | −60 to +12 dB, under a safety ceiling |
@@ -52,9 +52,9 @@ make build       # everything
 
 Two notes on a fresh clone:
 
-* The two Helvetica Neue faces the interface ships with live in `public/helvetica-neue-5/` and are not
-  tracked in git. Without them the configure step fails — put them there rather than switching the
-  product to a system font.
+* The two faces the interface ships with are tracked in `public/ClashDisplay_Complete/Fonts/OTF/`, so a clone needs
+  nothing else. The configure fails if those two paths move — fix the list in `src/UiJuce/CMakeLists.txt` rather
+  than switching the product to a system font (D-025, D-037).
 * Configure warns that the plug-in code `entangle` is longer than four characters. Known packaging
   issue, not something to silence.
 

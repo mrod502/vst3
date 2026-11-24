@@ -1,8 +1,10 @@
-# Build trees live in build/<config> at the repo root: build/debug, build/release.
-# BUILD_TYPE is the CMake spelling and the knob; the directory name is its lowercase form.
+# Build trees live in $(BUILD_ROOT)/<config>: build/release on the host, /ct/build/release in
+# the container, where compose points BUILD_ROOT at the build volume. BUILD_TYPE is the CMake
+# spelling and the knob; the directory name is its lowercase form.
 BUILD_TYPE ?= Release
 CONFIG     ?= $(shell printf '%s' '$(BUILD_TYPE)' | tr '[:upper:]' '[:lower:]')
-BUILD      := build/$(CONFIG)
+BUILD_ROOT ?= build
+BUILD      := $(BUILD_ROOT)/$(CONFIG)
 
 .PHONY: install
 install:
